@@ -1,15 +1,197 @@
 import os
+import re
+import pyodbc
+import shutil
 import fnmatch
 import numpy as np
 import pandas as pd
+import win32com.client
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# pd.set_option('display.max_rows', None)
-pd.set_option('display.max_columns', None)
+
+
+def copy_files(src_dst_pairs):
+    for src_file, dst_file in src_dst_pairs:
+        try:
+            shutil.copy2(src_file, dst_file)
+            # print(f"Copied {src_file} to {dst_file}")
+        except Exception as e:
+            print(f"file already exists {dst_file}:{e}")
+
+def rename_files(file_pairs):
+    for src_file, new_file_path in file_pairs:
+        try:
+            os.rename(src_file, new_file_path)
+            # print(f"Renamed {src_file} to {new_file_path}")
+        except Exception as e:
+            print(f"file already exists {new_file_path}: {e}")
+
+def process_date_folder(date_folder_name, input_dir, output_dir):
+    try:
+        # Create the main folder name
+        main_folder_name = f"survey_data_{date_folder_name}"
+
+        # Create the full path for the new directory
+        survey_data_path = os.path.join(output_dir, main_folder_name)
+        # Create the new directory
+        os.makedirs(survey_data_path, exist_ok=True)
+
+        # Create subdirectories
+        subdirectories = ['Data', 'Output', 'PAVE', 'ROW']
+        for subdirectory in subdirectories:
+            subdirectory_path = os.path.join(survey_data_path, subdirectory)
+            os.makedirs(subdirectory_path, exist_ok=True)
+
+        # Paths for source directories
+        data_folder_path = os.path.join(input_dir, date_folder_name, 'data')
+        output_path = os.path.join(survey_data_path, 'Output')
+        data_path = os.path.join(survey_data_path, 'Data')
+        photo_directory = os.path.join(input_dir, date_folder_name, 'photo', date_folder_name)
+
+        # Check if the Data directory exists for the current date
+        if os.path.exists(data_folder_path):
+            for folder_name in os.listdir(data_folder_path):
+                folder_path = os.path.join(data_folder_path, folder_name)
+                if os.path.isdir(folder_path):
+                    # Create each folder found in the Data directory inside the Output directory
+                    output_folder_path = os.path.join(output_path, folder_name)
+                    os.makedirs(output_folder_path, exist_ok=True)
+
+        # Copy .xlsx files from the source directory to the Output subdirectory
+        xlsx_files = []
+        for root, dirs, files in os.walk(input_dir):
+            for file_name in files:
+                if file_name.endswith('.xlsx'):
+                    src_file = os.path.join(root, file_name)
+                    # Check if the .xlsx file belongs to the current date folder
+                    if date_folder_name in root:
+                        dst_file = os.path.join(output_path, file_name)
+                        xlsx_files.append((src_file, dst_file))
+        copy_files(xlsx_files)
+        
+        for data_output in os.listdir(data_folder_path):
+            data_output_path = os.path.join(data_folder_path, data_output)
+            if os.path.isdir(data_output_path):
+                data_number = data_output.replace(date_folder_name, "").replace("RUN", "").lstrip("0")
+                new_folder_data = f"{date_folder_name}_{data_number}"
+                new_folder_data_path = os.path.join(data_path, new_folder_data)
+                os.makedirs(new_folder_data_path, exist_ok=True)
+
+        # Process Camera_GeoTagged and Log directories for the current date folder
+        for run_folder in os.listdir(data_folder_path):
+            run_folder_path = os.path.join(data_folder_path, run_folder)
+            if os.path.isdir(run_folder_path):
+                # Process Camera_GeoTagged
+                camera_geotagged_path = os.path.join(run_folder_path, 'Camera_GeoTagged')
+                if os.path.exists(camera_geotagged_path):
+                    run_number = run_folder.replace(date_folder_name, "").replace("RUN", "").lstrip("0")
+                    new_folder_name = f"{date_folder_name}_{run_number}"
+                    new_folder_path = os.path.join(survey_data_path, 'PAVE', new_folder_name, 'PAVE-0')
+                    os.makedirs(new_folder_path, exist_ok=True)
+
+                    # Copy .jpg files to the new folder and rename them
+                    jpg_files = []
+                    renamed_files = []
+                    jpg_counter = 1
+                    for file_name in os.listdir(camera_geotagged_path):
+                        if file_name.endswith('.jpg'):
+                            src_file = os.path.join(camera_geotagged_path, file_name)
+                            dst_file = os.path.join(new_folder_path, file_name)
+                            jpg_files.append((src_file, dst_file))
+
+                            # Rename the file
+                            new_file_name = f"{date_folder_name}_{run_number}-PAVE-0-{jpg_counter:05d}.jpg"
+                            new_file_path = os.path.join(new_folder_path, new_file_name)
+                            renamed_files.append((dst_file, new_file_path))
+                            jpg_counter += 1
+
+                    copy_files(jpg_files)
+                    rename_files(renamed_files)
+
+                # Process Log
+                log_path = os.path.join(run_folder_path, 'Log')
+                if os.path.exists(log_path):
+                    for file_name in os.listdir(log_path):
+                        if file_name.endswith(f'{run_folder}.csv'):
+                            csv_path = os.path.join(log_path, file_name)
+                            destination_subfolder_path = os.path.join(output_path, run_folder)
+                            os.makedirs(destination_subfolder_path, exist_ok=True)
+                            shutil.copy2(csv_path, destination_subfolder_path)
+
+        # Process ROW directory within photo directory
+        if os.path.exists(photo_directory):
+            for photo_run_folder in os.listdir(photo_directory):
+                photo_run_folder_path = os.path.join(photo_directory, photo_run_folder)
+                if os.path.isdir(photo_run_folder_path):
+                    # Process ROW
+                    run_number = photo_run_folder.replace(date_folder_name, "").replace("RUN", "").lstrip("0")
+                    new_folder_name = f"{date_folder_name}_{run_number}"
+                    new_folder_path = os.path.join(survey_data_path, 'ROW', new_folder_name, 'ROW-0')
+                    os.makedirs(new_folder_path, exist_ok=True)
+
+                    # Copy .jpg files to the new folder and rename them
+                    jpg_files = []
+                    renamed_files = []
+                    jpg_counter = 1
+                    for file_name in os.listdir(photo_run_folder_path):
+                        if file_name.endswith('.jpg'):
+                            src_file = os.path.join(photo_run_folder_path, file_name)
+                            dst_file = os.path.join(new_folder_path, file_name)
+                            jpg_files.append((src_file, dst_file))
+
+                            # Ensure unique file name
+                            new_file_name = f"{date_folder_name}_{run_number}-ROW-0-{jpg_counter:05d}.jpg"
+                            new_file_path = os.path.join(new_folder_path, new_file_name)
+                            renamed_files.append((dst_file, new_file_path))
+                            jpg_counter += 1
+
+                    copy_files(jpg_files)
+                    rename_files(renamed_files)
+
+    except Exception as e:
+        print(f"Error processing folder {date_folder_name}: {e}")
+
+
+def copy_and_organize_files(input_dir, output_dir):
+    try:
+        # Create the destination parent directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Find all date folders in the source directory
+        date_folders = [folder_name for folder_name in os.listdir(input_dir) if re.match(r'^\d{8}$', folder_name)]
+
+        if not date_folders:
+            print("No date folders found in the source directory.")
+        else:
+            with ThreadPoolExecutor(max_workers=100) as executor:
+                future_to_date_folder = {executor.submit(process_date_folder, date_folder_name, input_dir, output_dir): date_folder_name for date_folder_name in date_folders}
+
+                for future in as_completed(future_to_date_folder):
+                    date_folder_name = future_to_date_folder[future]
+                    try:
+                        future.result()
+                        print(f"✅ Processed folder: {date_folder_name} Successfully")
+                    except Exception as exc:
+                        print(f"{date_folder_name} generated an exception: {exc}")
+    except Exception as e:
+        print(f"Error in copy_and_organize_files: {e}")
+
+
+if __name__ == "__main__":
+    try:
+        base_dir = r"D:\xenomatixs"
+        input_dir = os.path.join(base_dir, "input")
+        output_dir = os.path.join(base_dir, "output")
+        copy_and_organize_files(input_dir, output_dir)
+    except Exception as e:
+        print(f"Error in the main block: {e}")
+        
+# sturcture
 
 # Define the path to your directories
-path = r"D:\xenomatixs\output\survey_data_20240726\Output"
-pic = r"D:\xenomatixs\output\survey_data_20240726\PAVE"
-log = r'D:\xenomatixs\output\survey_data_20240726\Output'
+# path = r"D:\xenomatixs\output\survey_data_20240726\Output" --path
+# pic = r"D:\xenomatixs\output\survey_data_20240726\PAVE" --pic
 
 def split_and_randomize(value, parts=4):
     random_parts = np.random.rand(parts)
@@ -74,7 +256,10 @@ def process_csv_files(path):
             file_path = os.path.join(root, filename)
             rut_df = pd.read_csv(file_path, delimiter=';')
             rut_df.columns = rut_df.columns.str.strip()
-            rut_df.drop(columns=['Unnamed: 5'], inplace=True, errors='ignore')
+            if 'Unnamed: 5' in rut_df.columns:
+                rut_df.drop(columns=['Unnamed: 5'], inplace=True, errors='ignore')
+            else:
+                pass
             increment = 5 if fnmatch.fnmatch(filename, '*xw_rutting*') else 5
             rut_df['event_start'] = range(0, len(rut_df) * increment, increment)
             rut_df['event_end'] = rut_df['event_start'] + increment
@@ -112,11 +297,17 @@ def get_jpg_names_and_nums(directory):
             jpg_dict[folder_name] = len(jpg_files)
 
     frame_df = pd.DataFrame(list(jpg_dict.items()), columns=['survey_code', 'pic_count'])
-    frame_df['survey_code'] = frame_df['survey_code'].str.replace('_', 'RUN0')
+    frame_df['survey_code'] = frame_df['survey_code'].str.replace(r'_(\d+)', lambda m: f"RUN{int(m.group(1)):02d}", regex=True)
 
     return jpg_files, frame_df
 
 # use
+
+for survey_date in os.listdir(output_dir):
+    path = os.path.join(output_dir, survey_date, 'Output')
+    # print(path)
+    pic = os.path.join(output_dir, survey_date, 'PAVE')
+    # print(pic)
 
 jpg_files, frame_df = get_jpg_names_and_nums(pic)
 iri_dataframes, rutting_dataframes = process_csv_files(path)
@@ -141,7 +332,7 @@ for rutting_file in rutting_dataframes:
             
 final_df = pd.concat(joined_dataframes.values(), ignore_index=True)
 final_df = final_df[final_df['iri'].notnull()]
-final_df.to_csv('final_df.csv', index=False)
+# final_df.to_csv('final_df.csv', index=False)
 
 def find_csv_files(start_dir, prefix='log_'):
     csv_files = []
@@ -150,224 +341,8 @@ def find_csv_files(start_dir, prefix='log_'):
             csv_files.append(os.path.join(dirpath, filename))
     return csv_files
 
-log_csv_files = find_csv_files(log)
-if log_csv_files:
-    log_df = pd.read_excel(log_csv_files[0])
-
-    # Rename columns and clean up column names
-    log_df.rename(columns={'ผิว': 'event_name', 'link_id ระบบ': 'section_id'}, inplace=True)
-    log_df.columns = log_df.columns.str.strip()
-
-    # Perform the initial merge and filter rows where frame_num is between numb_start and numb_end
-    merged_df = pd.merge(final_df, log_df, how='left', on=['survey_code'], suffixes=('_final_df', '_log_df'))
-    merged_df = merged_df[(merged_df['frame_num'] >= merged_df['numb_start']) & 
-                          (merged_df['frame_num'] <= merged_df['numb_end'])]
-
-    def process_val(df):
-        df['chainage'] = df['chainage_pic']
-        df['lon'] = df['rut_point_y']
-        df['lat'] = df['rut_point_x']
-        df['iri_right'] = df['iri right (m/km)']
-        df['iri_left'] = df['iri left (m/km)']
-        df['iri'] = df['iri']
-        df['iri_lane'] = df['iri_lane']
-        df['rutt_right'] = df['right_rutting']
-        df['rutt_left'] = df['left_rutting']
-        df['rutting'] = df['avg_rutting']
-        df['texture'] = 0
-        df['etd_texture'] = 0
-        df['event_name'] = df['event_name'].str.lower()
-        df['frame_number'] = df['frame_num']
-        df['file_name'] = df['survey_code'].str.replace('RUN0', '_')
-        df['run_code'] = df['file_name'].str.split('_').str[-1]
-
-        return df
-
-    processed_val = process_val(merged_df)
-
-    selected_columns_val = [
-        'chainage', 'lon', 'lat', 'iri_right', 'iri_left', 'iri', 'iri_lane', 'rutt_right', 'rutt_left', 
-        'rutting', 'texture', 'etd_texture', 'event_name', 'frame_number', 'file_name', 'run_code'
-    ]
-
-    selected_columns_val = [col for col in selected_columns_val if col in processed_val.columns]
-    processed_val[selected_columns_val].to_csv('access_valuelaser.csv', index=False)
-    
-    def process_dis(df):
-        df['chainage_pic'] = df['chainage_pic']
-        df['frame_number'] = df['frame_num']
-        df['event_name'] = df['event_name'].str.lower()
-        df['name_key'] = df['survey_code'].str.replace('RUN0', '_')
-        df['run_code'] = df['file_name'].str.split('_').str[-1]
-
-        return df
-
-    processed_dis = process_dis(merged_df)
-
-    selected_columns_dis = [
-        'chainage_pic', 'frame_number', 'event_name', 'name_key', 'run_code'
-    ]
-
-    selected_columns_dis = [col for col in selected_columns_dis if col in processed_dis.columns]
-    processed_dis[selected_columns_dis].to_csv('access_distress_pic.csv', index=False)
-    
-    def process_key(df):
-        df['event_str'] = round(df['numb_start'] * (df['max_chainage'] / df['pic_count']))
-        df['event_end'] = round(df['numb_end'] * (df['max_chainage'] / df['pic_count']))
-        df['event_num'] = df['event_name'].str[0].str.lower()
-        df['event_type'] = 'pave type'
-        df['event_name'] = df['event_name'].str.lower()
-        df['link_id'] = df['linkid']
-        df['lane_no'] = df['linkid'].apply(lambda x: x[11:13])
-        df['survey_date'] = df['date']
-        df['lat_str'] = df.groupby(['survey_code', 'linkid'])['rut_point_x'].transform('first')
-        df['lat_end'] = df.groupby(['survey_code', 'linkid'])['rut_point_x'].transform('last')
-        df['lon_str'] = df.groupby(['survey_code', 'linkid'])['rut_point_y'].transform('first')
-        df['lon_end'] = df.groupby(['survey_code', 'linkid'])['rut_point_y'].transform('last')
-        df['name_key'] = df['survey_code'].str.replace('RUN0', '_')
-        df['run_code'] = df['name_key'].str.split('_').str[-1]
-        
-        return df
-
-    processed_key = merged_df.groupby('survey_code', group_keys=False).apply(process_key).reset_index(drop=True)
-    processed_key = processed_key.groupby(['linkid', 'survey_date']).first().reset_index()
-
-    selected_columns_key = [
-        'event_str', 'event_end', 'event_num', 'event_type', 'event_name', 'link_id', 'section_id', 
-        'km_start', 'km_end', 'length', 'lane_no', 'survey_date', 'lat_str', 'lat_end', 'lon_str', 
-        'lon_end', 'name_key', 'run_code'
-    ]
-
-    selected_columns_key = [col for col in selected_columns_key if col in processed_key.columns]
-    processed_key[selected_columns_key].sort_values(by=['run_code', 'event_str', 'event_end'], ascending=[True, True, False]).to_csv('access_key.csv', index=False)
-    
-# 
-
-import os
-import fnmatch
-import pandas as pd
-
-log = r'D:\xenomatixs\output\survey_data_20240726\Output'
-
-def find_csv_files(start_dir, prefix='log_'):
-    csv_files = []
-    for dirpath, dirnames, filenames in os.walk(start_dir):
-        for filename in fnmatch.filter(filenames, f'{prefix}*.xlsx'):
-            csv_files.append(os.path.join(dirpath, filename))
-    return csv_files
-
-log_csv_files = find_csv_files(log)
-if log_csv_files:
-    log_df = pd.read_excel(log_csv_files[0])
-
-    # Rename columns and clean up column names
-    log_df.rename(columns={'ผิว': 'event_name', 'link_id ระบบ': 'section_id'}, inplace=True)
-    log_df.columns = log_df.columns.str.strip()
-
-    # Perform the initial merge and filter rows where frame_num is between numb_start and numb_end
-    merged_df = pd.merge(final_df, log_df, how='left', on=['survey_code'], suffixes=('_final_df', '_log_df'))
-    merged_df = merged_df[(merged_df['frame_num'] >= merged_df['numb_start']) & 
-                          (merged_df['frame_num'] <= merged_df['numb_end'])]
-
-    def process_val(df):
-        df['chainage'] = df['chainage_pic']
-        df['lon'] = df['rut_point_y']
-        df['lat'] = df['rut_point_x']
-        df['iri_right'] = df['iri right (m/km)']
-        df['iri_left'] = df['iri left (m/km)']
-        df['iri'] = df['iri']
-        df['iri_lane'] = df['iri_lane']
-        df['rutt_right'] = df['right_rutting']
-        df['rutt_left'] = df['left_rutting']
-        df['rutting'] = df['avg_rutting']
-        df['texture'] = 0
-        df['etd_texture'] = 0
-        df['event_name'] = df['event_name'].str.lower()
-        df['frame_number'] = df['frame_num']
-        df['file_name'] = df['survey_code'].str.replace('RUN0', '_')
-        df['run_code'] = df['file_name'].str.split('_').str[-1]
-
-        return df
-
-    processed_val = process_val(merged_df)
-
-    selected_columns_val = [
-        'chainage', 'lon', 'lat', 'iri_right', 'iri_left', 'iri', 'iri_lane', 'rutt_right', 'rutt_left', 
-        'rutting', 'texture', 'etd_texture', 'event_name', 'frame_number', 'file_name', 'run_code'
-    ]
-
-    selected_columns_val = [col for col in selected_columns_val if col in processed_val.columns]
-    processed_val[selected_columns_val].to_csv('access_valuelaser.csv', index=False)
-    
-    def process_dis(df):
-        df['chainage_pic'] = df['chainage_pic']
-        df['frame_number'] = df['frame_num']
-        df['event_name'] = df['event_name'].str.lower()
-        df['name_key'] = df['survey_code'].str.replace('RUN0', '_')
-        df['run_code'] = df['file_name'].str.split('_').str[-1]
-
-        return df
-
-    processed_dis = process_dis(merged_df)
-
-    selected_columns_dis = [
-        'chainage_pic', 'frame_number', 'event_name', 'name_key', 'run_code'
-    ]
-
-    selected_columns_dis = [col for col in selected_columns_dis if col in processed_dis.columns]
-    processed_dis[selected_columns_dis].to_csv('access_distress_pic.csv', index=False)
-    
-
-    def process_key(df):
-        df['event_str'] = round(df['numb_start'] * (df['max_chainage'] / df['pic_count']))
-        df['event_end'] = round(df['numb_end'] * (df['max_chainage'] / df['pic_count']))
-        df['event_num'] = df['event_name'].str[0].str.lower()
-        df['event_type'] = 'pave type'
-        df['event_name'] = df['event_name'].str.lower()
-        df['link_id'] = df['linkid']
-        df['lane_no'] = df['linkid'].apply(lambda x: x[11:13])
-        df['survey_date'] = df['date']
-        df['lat_str'] = df.groupby(['survey_code', 'linkid'])['rut_point_x'].transform('first')
-        df['lat_end'] = df.groupby(['survey_code', 'linkid'])['rut_point_x'].transform('last')
-        df['lon_str'] = df.groupby(['survey_code', 'linkid'])['rut_point_y'].transform('first')
-        df['lon_end'] = df.groupby(['survey_code', 'linkid'])['rut_point_y'].transform('last')
-        df['name_key'] = df['survey_code'].str.replace('RUN0', '_')
-        df['run_code'] = df['name_key'].str.split('_').str[-1]
-        
-        return df
-
-    processed_key = merged_df.groupby('survey_code', group_keys=False).apply(process_key).reset_index(drop=True)
-    processed_key = processed_key.groupby(['linkid', 'survey_date']).first().reset_index()
-
-    selected_columns_key = [
-        'event_str', 'event_end', 'event_num', 'event_type', 'event_name', 'link_id', 'section_id', 
-        'km_start', 'km_end', 'length', 'lane_no', 'survey_date', 'lat_str', 'lat_end', 'lon_str', 
-        'lon_end', 'name_key', 'run_code'
-    ]
-
-    selected_columns_key = [col for col in selected_columns_key if col in processed_key.columns]
-    processed_key[selected_columns_key].sort_values(by=['run_code', 'event_str', 'event_end'], ascending=[True, True, False]).to_csv('access_key.csv', index=False)
-    
-# 
-
-import os
-import fnmatch
-import pandas as pd
-from datetime import datetime
-
-log = r'D:\xenomatixs\output\survey_data_20240726\Output'
-
-def find_csv_files(start_dir, prefix='log_'):
-    csv_files = []
-    found_filenames = []
-    for dirpath, dirnames, filenames in os.walk(start_dir):
-        for filename in fnmatch.filter(filenames, f'{prefix}*.xlsx'):
-            csv_files.append(os.path.join(dirpath, filename))
-            found_filenames.append(filename)  # Store the filenames
-    return csv_files, found_filenames
-
-folder_names = [name for name in os.listdir(log) if os.path.isdir(os.path.join(log, name))]
-log_csv_files, filenames = find_csv_files(log)
+folder_names = [name for name in os.listdir(path) if os.path.isdir(os.path.join(path, name))]
+log_csv_files = find_csv_files(path)
 
 if log_csv_files:
     log_df = pd.read_excel(log_csv_files[0])
@@ -378,14 +353,95 @@ if log_csv_files:
 
     for folder_name in folder_names:
         print(f"Processing folder: {folder_name}")
-
+        
         # Perform the initial merge and filter rows where frame_num is between numb_start and numb_end
         merged_df = pd.merge(final_df, log_df, how='left', on=['survey_code'], suffixes=('_final_df', '_log_df'))
         merged_df = merged_df[(merged_df['frame_num'] >= merged_df['numb_start']) & 
-                              (merged_df['frame_num'] <= merged_df['numb_end'])]
+                            (merged_df['frame_num'] <= merged_df['numb_end'])]
         
         filtered_df = merged_df[merged_df['survey_code'] == folder_name]
-        run_code = folder_name.replace('RUN0', '_')
+        run_code = re.sub(r'RUN0*(\d+)', r'_\1', folder_name)
+
+        def process_val(df):
+            df['chainage'] = df['chainage_pic']
+            df['lon'] = df['rut_point_y']
+            df['lat'] = df['rut_point_x']
+            df['iri_right'] = df['iri right (m/km)']
+            df['iri_left'] = df['iri left (m/km)']
+            df['iri'] = df['iri']
+            df['iri_lane'] = df['iri_lane']
+            df['rutt_right'] = df['right_rutting']
+            df['rutt_left'] = df['left_rutting']
+            df['rutting'] = df['avg_rutting']
+            df['texture'] = 0
+            df['etd_texture'] = 0
+            df['event_name'] = df['event_name'].str.lower()
+            df['frame_number'] = df['frame_num']
+            df['file_name'] = df['survey_code'].str.replace(r'RUN0*(\d+)', r'_\1', regex=True)
+            df['run_code'] = df['file_name'].str.split('_').str[-1]
+
+            return df
+
+        processed_val = process_val(merged_df)
+
+        selected_columns_val = [
+            'chainage', 'lon', 'lat', 'iri_right', 'iri_left', 'iri', 'iri_lane', 'rutt_right', 'rutt_left', 
+            'rutting', 'texture', 'etd_texture', 'event_name', 'frame_number', 'file_name', 'run_code'
+        ]
+
+        selected_columns_val = [col for col in selected_columns_val if col in processed_val.columns]
+        processed_val_filename = os.path.join(path, 'access_valuelaser.csv')
+        processed_val[selected_columns_val].to_csv(processed_val_filename, index=False)
+        
+        def process_dis(df):
+            df['chainage_pic'] = df['chainage_pic']
+            df['frame_number'] = df['frame_num']
+            df['event_name'] = df['event_name'].str.lower()
+            df['name_key'] = df['survey_code'].str.replace(r'RUN0*(\d+)', r'_\1', regex=True)
+            df['run_code'] = df['file_name'].str.split('_').str[-1]
+
+            return df
+
+        processed_dis = process_dis(merged_df)
+
+        selected_columns_dis = [
+            'chainage_pic', 'frame_number', 'event_name', 'name_key', 'run_code'
+        ]
+
+        selected_columns_dis = [col for col in selected_columns_dis if col in processed_dis.columns]
+        processed_dis_filename = os.path.join(path, 'access_distress_pic.csv')
+        processed_dis[selected_columns_dis].to_csv(processed_dis_filename, index=False)
+        
+        def process_key(df):
+            df['event_str'] = round(df['numb_start'] * (df['max_chainage'] / df['pic_count']))
+            df['event_end'] = round(df['numb_end'] * (df['max_chainage'] / df['pic_count']))
+            df['event_num'] = df['event_name'].str[0].str.lower()
+            df['event_type'] = 'pave type'
+            df['event_name'] = df['event_name'].str.lower()
+            df['link_id'] = df['linkid']
+            df['lane_no'] = df['linkid'].apply(lambda x: x[11:13])
+            df['survey_date'] = df['date']
+            df['lat_str'] = df.groupby(['survey_code', 'linkid'])['rut_point_x'].transform('first')
+            df['lat_end'] = df.groupby(['survey_code', 'linkid'])['rut_point_x'].transform('last')
+            df['lon_str'] = df.groupby(['survey_code', 'linkid'])['rut_point_y'].transform('first')
+            df['lon_end'] = df.groupby(['survey_code', 'linkid'])['rut_point_y'].transform('last')
+            df['name_key'] = df['survey_code'].str.replace(r'RUN0*(\d+)', r'_\1', regex=True)
+            df['run_code'] = df['name_key'].str.split('_').str[-1]
+            
+            return df
+
+        processed_key = merged_df.groupby('survey_code', group_keys=False).apply(process_key).reset_index(drop=True)
+        processed_key = processed_key.groupby(['linkid', 'survey_date']).first().reset_index()
+
+        selected_columns_key = [
+            'event_str', 'event_end', 'event_num', 'event_type', 'event_name', 'link_id', 'section_id', 
+            'km_start', 'km_end', 'length', 'lane_no', 'survey_date', 'lat_str', 'lat_end', 'lon_str', 
+            'lon_end', 'name_key', 'run_code'
+        ]
+
+        selected_columns_key = [col for col in selected_columns_key if col in processed_key.columns]
+        processed_key_filename = os.path.join(path, 'access_key.csv')
+        processed_key[selected_columns_key].sort_values(by=['run_code', 'event_str', 'event_end'], ascending=[True, True, False]).to_csv(processed_key_filename, index=False)
         
         def mdb_video_process(df):
             df['CHAINAGE'] = df['chainage_pic']
@@ -410,7 +466,7 @@ if log_csv_files:
         ]
 
         selected_mdb_video_process = [col for col in selected_mdb_video_process if col in video_process.columns]
-        mdb_video_process_filename = f'D:/xeno/mdb/Video_Processed_{run_code}_2.csv'
+        mdb_video_process_filename = os.path.join(path, f'Video_Processed_{run_code}_2.csv')
         video_process[selected_mdb_video_process].to_csv(mdb_video_process_filename, index=False)
         
         mdb_video_header = pd.DataFrame({
@@ -437,8 +493,8 @@ if log_csv_files:
             'HFOV': [0, 0],
             'VFOV': [0, 0]
         })
-
-        mdb_video_header_filename = f'D:/xeno/mdb/Video_Header_{run_code}.csv'
+        
+        mdb_video_header_filename = os.path.join(path, f'Video_Header_{run_code}.csv')
         mdb_video_header.to_csv(mdb_video_header_filename, index=False)
         
         def mdb_survey_header(df):
@@ -494,7 +550,7 @@ if log_csv_files:
         ]
 
         selected_mdb_survey_header = [col for col in selected_mdb_survey_header if col in survey_header.columns]
-        mdb_survey_header_filename = f'D:/xeno/mdb/Survey_Header_{run_code}.csv'
+        mdb_survey_header_filename = os.path.join(path, f'Survey_Header_{run_code}.csv')
         survey_header[selected_mdb_survey_header].to_csv(mdb_survey_header_filename, index=False)
         
         def mdb_KeyCode_Raw(df):
@@ -528,13 +584,10 @@ if log_csv_files:
         ]
 
         selected_mdb_KeyCode_Raw = [col for col in selected_mdb_KeyCode_Raw if col in KeyCode_Raw.columns]
-        KeyCode_Raw[selected_mdb_KeyCode_Raw].sort_values(by=['lane_no', 'CHAINAGE_START', 'CHAINAGE_END'], ascending=[True, True, False]).to_csv(f'D:/xeno/mdb/KeyCode_Raw_{run_code}.csv', index=False)
+        mdb_KeyCode_Raw_filename = os.path.join(path, f'KeyCode_Raw_{run_code}.csv')
+        KeyCode_Raw[selected_mdb_KeyCode_Raw].sort_values(by=['lane_no', 'CHAINAGE_START', 'CHAINAGE_END'], ascending=[True, True, False]).to_csv(mdb_KeyCode_Raw_filename, index=False)    
         
-# 
-
-import os
-import pyodbc
-import win32com.client
+#
 
 def create_access_db(db_path):
     if os.path.isfile(db_path):
@@ -576,14 +629,13 @@ def insert_csv_to_access(csv_path, table_name, access_db_path):
             con.close()
 
 
-
 log = r'D:\xenomatixs\output\survey_data_20240726\Output'
 patmdb = r'D:\xeno\mdb'
 
-folder_names = [name for name in os.listdir(log) if os.path.isdir(os.path.join(log, name))]
+folder_names = [name for name in os.listdir(path) if os.path.isdir(os.path.join(path, name))]
 
 for folder_name in folder_names:
-    run_code = folder_name.replace('RUN0', '_')
+    run_code = folder_name.replace(r'RUN0*(\d+)', r'_\1', regex=True)
     mdb_path = os.path.join(patmdb, f'{run_code}_edit.mdb')
     create_access_db(mdb_path)
 
@@ -603,4 +655,4 @@ for folder_name in folder_names:
         insert_csv_to_access(csv_path, table_name, mdb_path)
         # os.remove(csv_path)
         
-print(f"All CSV files have been processed and imported into the Access database.")   
+print(f"All CSV files have been processed and imported into the Access database.")
