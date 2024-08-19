@@ -4,12 +4,16 @@ import time
 import shutil
 import pyodbc
 import fnmatch
+import warnings
+import openpyxl
 import numpy as np
 import pandas as pd
 import win32com.client
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Suppress DeprecationWarnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 pd.options.mode.chained_assignment = None  # default='warn'
 
 def copy_files(src_dst_pairs):
@@ -679,7 +683,6 @@ def main(final_df):
                     os.remove(os.path.join(mdb_folder_path, csv_name))
 
     print(f"🎉 All files have been processed!. ")
-
 
 def make_processed_file(base_dir):
     processed = os.path.join(base_dir, 'processed')
