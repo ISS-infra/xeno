@@ -6,38 +6,36 @@ import pyodbc
 import fnmatch
 import numpy as np
 import pandas as pd
-import tkinter as tk
 import win32com.client
 from datetime import datetime
-from tkinter import filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 pd.options.mode.chained_assignment = None  # default='warn'
-
-def log_message(message):
-    """Append a message to the log_text widget and update the UI."""
-    log_text.insert(tk.END, message + '\n')
-    log_text.see(tk.END)  # Auto-scroll to the end of the text
-    root.update_idletasks()
 
 def copy_files(src_dst_pairs):
     for src_file, dst_file in src_dst_pairs:
         try:
             shutil.copy2(src_file, dst_file)
+            # print(f"Copied {src_file} to {dst_file}")
         except Exception as e:
-            log_message(f"file already exists {dst_file}:{e}")
+            print(f"file already exists {dst_file}:{e}")
 
 def rename_files(file_pairs):
     for src_file, new_file_path in file_pairs:
         try:
             os.rename(src_file, new_file_path)
+            # print(f"Renamed {src_file} to {new_file_path}")
         except Exception as e:
-            log_message(f"file already exists {new_file_path}: {e}")
+            print(f"file already exists {new_file_path}: {e}")
 
 def process_date_folder(date_folder_name, input_dir, output_dir):
     try:
+        # Create the main folder name
         main_folder_name = f"survey_data_{date_folder_name}"
+
+        # Create the full path for the new directory
         survey_data_path = os.path.join(output_dir, main_folder_name)
+        # Create the new directory
         os.makedirs(survey_data_path, exist_ok=True)
 
         # Create subdirectories
@@ -57,6 +55,7 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
             for folder_name in os.listdir(data_folder_path):
                 folder_path = os.path.join(data_folder_path, folder_name)
                 if os.path.isdir(folder_path):
+                    # Create each folder found in the Data directory inside the Output directory
                     output_folder_path = os.path.join(output_path, folder_name)
                     os.makedirs(output_folder_path, exist_ok=True)
 
@@ -66,6 +65,7 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
             for file_name in files:
                 if file_name.endswith('.xlsx'):
                     src_file = os.path.join(root, file_name)
+                    # Check if the .xlsx file belongs to the current date folder
                     if date_folder_name in root:
                         dst_file = os.path.join(output_path, file_name)
                         xlsx_files.append((src_file, dst_file))
@@ -151,16 +151,18 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
                     rename_files(renamed_files)
 
     except Exception as e:
-        log_message(f"Error processing folder {date_folder_name}: {e}")
+        print(f"Error processing folder {date_folder_name}: {e}")
 
 def copy_and_organize_files(input_dir, output_dir):
     try:
+        # Create the destination parent directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
 
+        # Find all date folders in the source directory
         date_folders = [folder_name for folder_name in os.listdir(input_dir) if re.match(r'^\d{8}$', folder_name)]
 
         if not date_folders:
-            log_message("No date folders found in the source directory.")
+            print("No date folders found in the source directory.")
         else:
             with ThreadPoolExecutor(max_workers=100) as executor:
                 future_to_date_folder = {executor.submit(process_date_folder, date_folder_name, input_dir, output_dir): date_folder_name for date_folder_name in date_folders}
@@ -169,11 +171,11 @@ def copy_and_organize_files(input_dir, output_dir):
                     date_folder_name = future_to_date_folder[future]
                     try:
                         future.result()
-                        log_message(f"✅ Processed folder: {date_folder_name} Successfully")
+                        print(f"✅ Processed folder: {date_folder_name} Successfully")
                     except Exception as exc:
-                        log_message(f"{date_folder_name} generated an exception: {exc}")
+                        print(f"{date_folder_name} generated an exception: {exc}")
     except Exception as e:
-        log_message(f"Error in copy_and_organize_files: {e}")
+        print(f"Error in copy_and_organize_files: {e}")
 
 # Generate random iri
 def generate_parts(target_values, num_parts, tolerance):
@@ -195,91 +197,89 @@ def process_csv_files(path):
     all_iri_dataframes = [] # empty list
     all_rutting_dataframes = [] # empty list
     
-    try:
-        for root, dirs, files in os.walk(path):
-            # Find files
-            iri_files = [f for f in files if f.endswith('.csv') and 'xw_iri_qgis' in f]
-            rutting_files = [f for f in files if f.endswith('.csv') and 'xw_rutting' in f]
+    for root, dirs, files in os.walk(path):
+        # Find files
+        iri_files = [f for f in files if f.endswith('.csv') and 'xw_iri_qgis' in f]
+        rutting_files = [f for f in files if f.endswith('.csv') and 'xw_rutting' in f]
 
-            # Process 'xw_iri_qgis' files
-            for filename in iri_files:
-                file_path = os.path.join(root, filename)
-                iri_df = pd.read_csv(file_path, delimiter=';')
-                iri_df.columns = iri_df.columns.str.strip()
-                survey_code = filename.split('_')[3].split('.')[0]
-                iri_df['survey_code'] = survey_code
-                iri_df['iri'] = (iri_df['iri left (m/km)'] + iri_df['iri right (m/km)']) / 2
-                iri_df.drop(columns=['geometry'], errors='ignore', inplace=True)
+        # Process 'xw_iri_qgis' files
+        for filename in iri_files:
+            file_path = os.path.join(root, filename)
+            iri_df = pd.read_csv(file_path, delimiter=';')
+            iri_df.columns = iri_df.columns.str.strip()
+            survey_code = filename.split('_')[3].split('.')[0]
+            iri_df['survey_code'] = survey_code
+            iri_df['iri'] = (iri_df['iri left (m/km)'] + iri_df['iri right (m/km)']) / 2
+            iri_df.drop(columns=['geometry'], errors='ignore', inplace=True)
 
-                # Generate random values for iri_lane
-                target_values = iri_df['iri']
-                num_parts = 4
-                tolerance = 0.3
-                parts_list = generate_parts(target_values, num_parts, tolerance)
+            # Generate random values for iri_lane
+            target_values = iri_df['iri']
+            num_parts = 4
+            tolerance = 0.3
+            parts_list = generate_parts(target_values, num_parts, tolerance)
 
-                # Expand DataFrame by repeating the rows
-                iri_df = iri_df.loc[iri_df.index.repeat(num_parts)].reset_index(drop=True)
-                iri_df['iri_lane'] = np.concatenate(parts_list)
+            # Expand DataFrame by repeating the rows
+            iri_df = iri_df.loc[iri_df.index.repeat(num_parts)].reset_index(drop=True)
+            iri_df['iri_lane'] = np.concatenate(parts_list)
 
-                increment = 5 if fnmatch.fnmatch(filename, '*xw_iri_qgis*') else 5
-                iri_df['event_start'] = range(0, len(iri_df) * increment, increment)
-                iri_df['event_end'] = iri_df['event_start'] + increment
+            increment = 5 if fnmatch.fnmatch(filename, '*xw_iri_qgis*') else 5
+            iri_df['event_start'] = range(0, len(iri_df) * increment, increment)
+            iri_df['event_end'] = iri_df['event_start'] + increment
 
-                # Append the processed IRI DataFrame to the list
-                all_iri_dataframes.append(iri_df)
+            # Append the processed IRI DataFrame to the list
+            all_iri_dataframes.append(iri_df)
 
-            # Process 'xw_rutting' files
-            for filename in rutting_files:
-                file_path = os.path.join(root, filename)
-                rut_df = pd.read_csv(file_path, delimiter=';')
-                rut_df.columns = rut_df.columns.str.strip()
-                if 'Unnamed: 5' in rut_df.columns:
-                    rut_df.drop(columns=['Unnamed: 5'], inplace=True, errors='ignore')
-                else:
-                    pass
-                increment = 5 if fnmatch.fnmatch(filename, '*xw_rutting*') else 5
-                rut_df['event_start'] = range(0, len(rut_df) * increment, increment)
-                rut_df['event_end'] = rut_df['event_start'] + increment
-                rut_df['chainage'] = rut_df['event_start']
-                survey_code = filename.split('_')[2].split('.')[0]
-                rut_df['survey_code'] = survey_code
-                rut_df['rut_point_x'] = rut_df['qgis_shape'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[1]))
-                rut_df['rut_point_y'] = rut_df['qgis_shape'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[0]))
-                
-                # Apply interpolation with a limit to avoid interpolating across large gaps
-                rut_df['rut_point_x'] = rut_df['rut_point_x'].interpolate(method='linear', limit_direction='both')
-                rut_df['rut_point_y'] = rut_df['rut_point_y'].interpolate(method='linear', limit_direction='both')
-
-                # Forward/backward fill to close gaps
-                rut_df['rut_point_x'].fillna(method='ffill', inplace=True)
-                rut_df['rut_point_x'].fillna(method='bfill', inplace=True)
-                rut_df['rut_point_y'].fillna(method='ffill', inplace=True)
-                rut_df['rut_point_y'].fillna(method='bfill', inplace=True)
-
-                # Replace remaining NaN values with 0 (optional)
-                rut_df['rut_point_x'].fillna(0, inplace=True)
-                rut_df['rut_point_y'].fillna(0, inplace=True)
+        # Process 'xw_rutting' files
+        for filename in rutting_files:
+            file_path = os.path.join(root, filename)
+            rut_df = pd.read_csv(file_path, delimiter=';')
+            rut_df.columns = rut_df.columns.str.strip()
+            if 'Unnamed: 5' in rut_df.columns:
+                rut_df.drop(columns=['Unnamed: 5'], inplace=True, errors='ignore')
+            else:
+                pass
+            increment = 5 if fnmatch.fnmatch(filename, '*xw_rutting*') else 5
+            rut_df['event_start'] = range(0, len(rut_df) * increment, increment)
+            rut_df['event_end'] = rut_df['event_start'] + increment
+            rut_df['chainage'] = rut_df['event_start']
+            survey_code = filename.split('_')[2].split('.')[0]
+            rut_df['survey_code'] = survey_code
+            rut_df['rut_point_x'] = rut_df['qgis_shape'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[1]))
+            rut_df['rut_point_y'] = rut_df['qgis_shape'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[0]))
             
-                rut_df.rename(columns={'#Date':'Date', 'left rutting height': 'left_rutting', 'right rutting height': 'right_rutting', 'average height': 'avg_rutting'}, inplace=True)
-                rut_df.drop(columns=['qgis_shape'], inplace=True)
+            # Apply interpolation with a limit to avoid interpolating across large gaps
+            rut_df['rut_point_x'] = rut_df['rut_point_x'].interpolate(method='linear', limit_direction='both')
+            rut_df['rut_point_y'] = rut_df['rut_point_y'].interpolate(method='linear', limit_direction='both')
 
-                all_rutting_dataframes.append(rut_df)
+            # Forward/backward fill to close gaps
+            rut_df['rut_point_x'].fillna(method='ffill', inplace=True)
+            rut_df['rut_point_x'].fillna(method='bfill', inplace=True)
+            rut_df['rut_point_y'].fillna(method='ffill', inplace=True)
+            rut_df['rut_point_y'].fillna(method='bfill', inplace=True)
 
-        if all_iri_dataframes:
-            iri_dataframes = pd.concat(all_iri_dataframes, ignore_index=True)
-        else:
-            iri_dataframes = pd.DataFrame()
-
-        if all_rutting_dataframes:
-            rutting_dataframes = pd.concat(all_rutting_dataframes, ignore_index=True)
-        else:
-            rutting_dataframes = pd.DataFrame()
-
-        log_message(f"✅ Finished processing: .CSV files.")
-    except Exception as e:
-        log_message(f"❌ Failed to process: {e}")
+            # Replace remaining NaN values with 0 (optional)
+            rut_df['rut_point_x'].fillna(0, inplace=True)
+            rut_df['rut_point_y'].fillna(0, inplace=True)
         
+            rut_df.rename(columns={'#Date':'Date', 'left rutting height': 'left_rutting', 'right rutting height': 'right_rutting', 'average height': 'avg_rutting'}, inplace=True)
+            rut_df.drop(columns=['qgis_shape'], inplace=True)
+
+            all_rutting_dataframes.append(rut_df)
+
+    if all_iri_dataframes:
+        iri_dataframes = pd.concat(all_iri_dataframes, ignore_index=True)
+    else:
+        iri_dataframes = pd.DataFrame()
+
+    if all_rutting_dataframes:
+        rutting_dataframes = pd.concat(all_rutting_dataframes, ignore_index=True)
+    else:
+        rutting_dataframes = pd.DataFrame()
+        
+    print(f"✅ Finished processing: .CSV files.")
     return iri_dataframes, rutting_dataframes
+
+# edit 9/9
 
 # Perform the left join on xw_rutting and xw_iri_qgis
 def left_join_dataframes(df_rutting, df_iri):
@@ -310,7 +310,6 @@ def get_jpg_filenames(directory):
 
     return detailed_df
 
-# Perform add frame_num and frame_num_ch
 def add_frame_num_to_joined_df(joined_df, derived_values, frame_numbers):
     joined_df['frame_num_ch'] = pd.NA
     joined_df['frame_num'] = pd.NA
@@ -327,7 +326,6 @@ def add_frame_num_to_joined_df(joined_df, derived_values, frame_numbers):
         
     return joined_df
 
-# Perform fainal data frame
 def process_fainal_df(output_dir):
     frame_numbers_df = get_jpg_filenames(output_dir)  # This returns a DataFrame
     frame_numbers = frame_numbers_df['frame_num'].astype(int).tolist()
@@ -362,6 +360,7 @@ def process_fainal_df(output_dir):
     # final_df = final_df[final_df['iri'].notnull()][selected_columns]
     
     return final_df
+# edit 9/9
 
 def find_csv_files(start_dir, prefix='log_'):
     csv_files = []
@@ -637,7 +636,7 @@ def main(final_df, output_dir):
                 mdb_KeyCode_Raw_filename = os.path.join(mdb_folder_path, f'KeyCode_Raw_{run_code}.csv')
                 KeyCode_Raw[selected_mdb_KeyCode_Raw].sort_values(by=['lane_no', 'CHAINAGE_START', 'CHAINAGE_END'], ascending=[True, True, False]).to_csv(mdb_KeyCode_Raw_filename, index=False)    
 # .mdb 
-# # insert .mdb
+# insert .mdb
                 def create_access_db(db_path):
                     if os.path.isfile(db_path):
                         print(f"⛔ File already exists: {db_path}")
@@ -731,89 +730,33 @@ def main(final_df, output_dir):
                 for csv_name in csv_files.keys():
                     os.remove(os.path.join(mdb_folder_path, csv_name))
 # insert .mdb
-    log_message(f"🎉 All files have been processed!. ")
+    print(f"🎉 All files have been processed!. ")
 
 def make_processed_file(base_dir):
     processed = os.path.join(base_dir, 'processed')
     input_dir = os.path.join(base_dir, 'input')
+    date_folders = [folder_name for folder_name in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, folder_name)) and re.match(r'^\d{8}$', folder_name)]
     
-    for folder_name in os.listdir(input_dir):
-        if os.path.isdir(os.path.join(input_dir, folder_name)) and re.match(r'^\d{8}$', folder_name):
-            shutil.move(os.path.join(input_dir, folder_name), os.path.join(processed, folder_name))
+    def move_folder(folder_name):
+        shutil.move(
+            os.path.join(input_dir, folder_name),
+            os.path.join(processed, folder_name)
+        )
+    with ThreadPoolExecutor(max_workers=200) as executor:
+        executor.map(move_folder, date_folders)
+        
+    print(f"🎉 Processed Done.")
 
-    log_message("🎉 Move Files Done.")
 
-def select_base_dir():
-    """Open a dialog to select a base directory and update the entry field."""
-    base_dir = filedialog.askdirectory()
-    if base_dir:
-        entry_base_dir.delete(0, tk.END)
-        entry_base_dir.insert(0, base_dir)
-
-def process_data():
-    """Process files from the selected base directory and update status."""
-    base_dir = os.path.normpath(entry_base_dir.get())
-    if not base_dir:
-        messagebox.showwarning("Warning", "Please select a base directory!")
-        return
-
-    input_dir = os.path.join(base_dir, "input")
-    output_dir = os.path.join(base_dir, "output")
-
-    status_label.config(text="Processing files...")
-    root.update_idletasks()
-    
-    try:
-        log_message("🚀 Starting file processing...")
-        log_message(f"📂 Base directory: {base_dir}")
-
-        # Simulate file processing steps and log progress
-        log_message(f"📁 Copying files from {input_dir} to {output_dir}...")
-        copy_and_organize_files(input_dir, output_dir)
-        log_message(f"✔️ Files organized successfully.")
-
-        log_message(f"📝 Processing final dataframe...")
-        final_df = process_fainal_df(output_dir)
-        log_message(f"✔️ Final dataframe processed.")
-
-        log_message(f"🔄 Running main function...")
-        main(final_df, output_dir)
-        log_message(f"✔️ Main processing completed.")
-
-        log_message(f"📦 Making processed files in {base_dir}...")
-        make_processed_file(base_dir)
-        log_message(f"✔️ Processed files generated.")
-
-        status_label.config(text="Processing complete!")
-        messagebox.showinfo("Success", f"Processing completed successfully in {base_dir}!")
-    except Exception as e:
-        log_message(f"⛔ Error: {str(e)}")
-        traceback.print_exc() # type: ignore
-        status_label.config(text="Processing failed.")
-        messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
 if __name__ == "__main__":
     try:
-        root = tk.Tk()
-        root.title("Xeno UI")
-        root.geometry("600x400")
-
-        tk.Label(root, text="Base Directory:").pack(pady=5)
-
-        entry_base_dir = tk.Entry(root, width=50)
-        entry_base_dir.pack(pady=5)
-
-        tk.Button(root, text="Browse", command=select_base_dir).pack(pady=5)
-        tk.Button(root, text="Process", command=process_data).pack(pady=10)
-
-        status_label = tk.Label(root, text=f"⌛ Status: Waiting for input...")
-        status_label.pack(pady=10)
-
-        log_text = tk.Text(root, height=15, width=70)
-        log_text.pack(pady=5)
-        
-        root.mainloop()
+        base_dir = r"D:\xenomatix"
+        input_dir = os.path.join(base_dir, "input")
+        output_dir = os.path.join(base_dir, "output")
+        # copy_and_organize_files(input_dir, output_dir)
+        final_df = process_fainal_df(output_dir)
+        main(final_df)
+        # make_processed_file(base_dir)
     except Exception as e:
         print(f"⛔ Error in the main block: {e}")
-        traceback.print_exc() # type: ignore
-
