@@ -792,6 +792,8 @@ def process_data():
         status_label.config(text="Processing failed.")
         messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
+
+
 if __name__ == "__main__":
     try:
         root = tk.Tk()
