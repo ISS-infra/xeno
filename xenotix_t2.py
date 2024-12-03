@@ -11,29 +11,31 @@ import numpy as np
 import pandas as pd
 import tkinter as tk
 import win32com.client
-import concurrent.futures
 import matplotlib.pyplot as plt
+from time import sleep
 from datetime import datetime
-from tkinter import filedialog, messagebox
+from threading import Thread, Lock
+from tkinter import ttk, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-
-pd.options.mode.chained_assignment = None  # default='warn'
 
 
 def log_message(message):
     """Append a message to the log_text widget and update the UI."""
     log_text.insert(tk.END, message + '\n')
-    log_text.see(tk.END)  # Auto-scroll to the end of the text
+    log_text.see(tk.END)
     root.update_idletasks()
 
 def copy_files(src_dst_pairs):
     for src_file, dst_file in src_dst_pairs:
         try:
+            if os.path.exists(dst_file):
+                log_message(f"File already exists, skipping: {dst_file}")
+                continue
             shutil.copy2(src_file, dst_file)
         except Exception as e:
-            log_message(f"file already exists {dst_file}:{e}")
-
+            log_message(f"Error copying {src_file} to {dst_file}: {e}")
+            
 def rename_files(file_pairs):
     for src_file, new_file_path in file_pairs:
         try:
@@ -46,19 +48,16 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
         main_folder_name = f"survey_data_{date_folder_name}"
         survey_data_path = os.path.join(output_dir, main_folder_name)
         os.makedirs(survey_data_path, exist_ok=True)
-
         # Create subdirectories
         subdirectories = ['Data', 'Output', 'PAVE', 'ROW']
         for subdirectory in subdirectories:
             subdirectory_path = os.path.join(survey_data_path, subdirectory)
             os.makedirs(subdirectory_path, exist_ok=True)
-
         # Paths for source directories
         data_folder_path = os.path.join(input_dir, date_folder_name, 'data')
         output_path = os.path.join(survey_data_path, 'Output')
         data_path = os.path.join(survey_data_path, 'Data')
         photo_directory = os.path.join(input_dir, date_folder_name, 'photo', date_folder_name)
-
         # Check if the Data directory exists for the current date
         if os.path.exists(data_folder_path):
             for folder_name in os.listdir(data_folder_path):
@@ -66,7 +65,6 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
                 if os.path.isdir(folder_path):
                     output_folder_path = os.path.join(output_path, folder_name)
                     os.makedirs(output_folder_path, exist_ok=True)
-
         # Copy .xlsx files from the source directory to the Output subdirectory
         xlsx_files = []
         for root, dirs, files in os.walk(input_dir):
@@ -76,6 +74,7 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
                     if date_folder_name in root:
                         dst_file = os.path.join(output_path, file_name)
                         xlsx_files.append((src_file, dst_file))
+                        
         copy_files(xlsx_files)
         
         for data_output in os.listdir(data_folder_path):
@@ -85,19 +84,17 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
                 new_folder_data = f"{date_folder_name}_{data_number}"
                 new_folder_data_path = os.path.join(data_path, new_folder_data)
                 os.makedirs(new_folder_data_path, exist_ok=True)
-
         # Process Camera_GeoTagged and Log directories for the current date folder
         for run_folder in os.listdir(data_folder_path):
             run_folder_path = os.path.join(data_folder_path, run_folder)
             if os.path.isdir(run_folder_path):
                 # Process Camera_GeoTagged
-                camera_geotagged_path = os.path.join(run_folder_path, 'Camera_GeoTagged')
+                camera_geotagged_path = os.path.join(run_folder_path, 'Camera')
                 if os.path.exists(camera_geotagged_path):
                     run_number = run_folder.replace(date_folder_name, "").replace("RUN", "").lstrip("0")
                     new_folder_name = f"{date_folder_name}_{run_number}"
                     new_folder_path = os.path.join(survey_data_path, 'PAVE', new_folder_name, 'PAVE-0')
                     os.makedirs(new_folder_path, exist_ok=True)
-
                     # Copy .jpg files to the new folder and rename them
                     jpg_files = []
                     renamed_files = []
@@ -107,7 +104,6 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
                             src_file = os.path.join(camera_geotagged_path, file_name)
                             dst_file = os.path.join(new_folder_path, file_name)
                             jpg_files.append((src_file, dst_file))
-
                             # Rename the file
                             new_file_name = f"{date_folder_name}_{run_number}-PAVE-0-{jpg_counter:05d}.jpg"
                             new_file_path = os.path.join(new_folder_path, new_file_name)
@@ -116,7 +112,6 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
 
                     copy_files(jpg_files)
                     rename_files(renamed_files)
-
                 # Process Log
                 log_path = os.path.join(run_folder_path, 'Log')
                 if os.path.exists(log_path):
@@ -137,7 +132,6 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
                     new_folder_name = f"{date_folder_name}_{run_number}"
                     new_folder_path = os.path.join(survey_data_path, 'ROW', new_folder_name, 'ROW-0')
                     os.makedirs(new_folder_path, exist_ok=True)
-
                     # Copy .jpg files to the new folder and rename them
                     jpg_files = []
                     renamed_files = []
@@ -147,7 +141,6 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
                             src_file = os.path.join(photo_run_folder_path, file_name)
                             dst_file = os.path.join(new_folder_path, file_name)
                             jpg_files.append((src_file, dst_file))
-
                             # Ensure unique file name
                             new_file_name = f"{date_folder_name}_{run_number}-ROW-0-{jpg_counter:05d}.jpg"
                             new_file_path = os.path.join(new_folder_path, new_file_name)
@@ -163,16 +156,15 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
 def copy_and_organize_files(input_dir, output_dir):
     try:
         os.makedirs(output_dir, exist_ok=True)
-
         date_folders = [folder_name for folder_name in os.listdir(input_dir) if re.match(r'^\d{8}$', folder_name)]
+        total_folders = len(date_folders)
 
         if not date_folders:
             log_message("No date folders found in the source directory.")
         else:
             with ThreadPoolExecutor(max_workers=100) as executor:
                 future_to_date_folder = {executor.submit(process_date_folder, date_folder_name, input_dir, output_dir): date_folder_name for date_folder_name in date_folders}
-
-                for future in as_completed(future_to_date_folder):
+                for i, future in enumerate(as_completed(future_to_date_folder)):
                     date_folder_name = future_to_date_folder[future]
                     try:
                         future.result()
@@ -182,7 +174,6 @@ def copy_and_organize_files(input_dir, output_dir):
     except Exception as e:
         log_message(f"Error in copy_and_organize_files: {e}")
 
-# Generate random iri
 def generate_parts(target_values, num_parts, tolerance):
     parts_list = []
     for target_value in target_values:
@@ -197,7 +188,6 @@ def generate_parts(target_values, num_parts, tolerance):
             
     return parts_list
 
-# Find all relevant CSV files and process them
 def process_csv_files(path):
     all_iri_dataframes = [] # empty list
     all_rutting_dataframes = [] # empty list
@@ -214,10 +204,12 @@ def process_csv_files(path):
                 iri_df = pd.read_csv(file_path, delimiter=';')
                 iri_df.columns = iri_df.columns.str.strip()
                 survey_code = filename.split('_')[3].split('.')[0]
+                survey_date = survey_code[:8]
+                iri_df['date'] = survey_date
                 iri_df['survey_code'] = survey_code
-                iri_df['iri'] = (iri_df['iri left (m/km)'] + iri_df['iri right (m/km)']) / 2
-                iri_df.drop(columns=['geometry'], errors='ignore', inplace=True)
-
+                iri_df['iri'] = (iri_df['iri 0 (m/km)'] + iri_df['iri 1 (m/km)']) / 2
+                iri_df.drop(columns=['geometry (start_lonlat,end_lonlat)', 'Timestamps', 'Heading (degrees)', 'Speed (m/s)'], errors='ignore', inplace=True)
+                
                 # Generate random values for iri_lane
                 target_values = iri_df['iri']
                 num_parts = 4
@@ -227,14 +219,12 @@ def process_csv_files(path):
                 # Expand DataFrame by repeating the rows
                 iri_df = iri_df.loc[iri_df.index.repeat(num_parts)].reset_index(drop=True)
                 iri_df['iri_lane'] = np.concatenate(parts_list)
-
                 increment = 5 if fnmatch.fnmatch(filename, '*xw_iri_qgis*') else 5
                 iri_df['event_start'] = range(0, len(iri_df) * increment, increment)
                 iri_df['event_end'] = iri_df['event_start'] + increment
 
                 # Append the processed IRI DataFrame to the list
                 all_iri_dataframes.append(iri_df)
-                # print(f'iri_{all_iri_dataframes}')
 
             # Process 'xw_rutting' files
             for filename in rutting_files:
@@ -251,8 +241,8 @@ def process_csv_files(path):
                 rut_df['chainage'] = rut_df['event_start']
                 survey_code = filename.split('_')[2].split('.')[0]
                 rut_df['survey_code'] = survey_code
-                rut_df['rut_point_x'] = rut_df['qgis_shape'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[1]))
-                rut_df['rut_point_y'] = rut_df['qgis_shape'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[0]))
+                rut_df['rut_point_x'] = rut_df['geometry (start_lonlat,end_lonlat)'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[1]))
+                rut_df['rut_point_y'] = rut_df['geometry (start_lonlat,end_lonlat)'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[0]))
                 
                 # Apply interpolation with a limit to avoid interpolating across large gaps
                 rut_df['rut_point_x'] = rut_df['rut_point_x'].interpolate(method='linear', limit_direction='both')
@@ -268,11 +258,10 @@ def process_csv_files(path):
                 rut_df['rut_point_x'].fillna(0, inplace=True)
                 rut_df['rut_point_y'].fillna(0, inplace=True)
             
-                rut_df.rename(columns={'#Date':'Date', 'left rutting height': 'left_rutting', 'right rutting height': 'right_rutting', 'average height': 'avg_rutting'}, inplace=True)
-                rut_df.drop(columns=['qgis_shape'], inplace=True)
-
+                rut_df.rename(columns={'left rutting height': 'left_rutting', 'right rutting height': 'right_rutting', 'average height': 'avg_rutting'}, inplace=True)
+                rut_df.drop(columns=['geometry (start_lonlat,end_lonlat)', 'Timestamps', 'Heading (degrees)', 'Speed (m/s)'], errors='ignore', inplace=True)
+            
                 all_rutting_dataframes.append(rut_df)
-                # print(f'_rutt{all_rutting_dataframes}')
 
         if all_iri_dataframes:
             iri_dataframes = pd.concat(all_iri_dataframes, ignore_index=True)
@@ -283,18 +272,16 @@ def process_csv_files(path):
             rutting_dataframes = pd.concat(all_rutting_dataframes, ignore_index=True)
         else:
             rutting_dataframes = pd.DataFrame()
-            
-        return iri_dataframes, rutting_dataframes
 
+        log_message(f"✅ Finished processing: .CSV files.")
     except Exception as e:
-        print(f'Error: {e}')
-        return pd.DataFrame(), pd.DataFrame()    
+        log_message(f"❌ Failed to process: {e}")
+        
+    return iri_dataframes, rutting_dataframes
 
-# Perform the left join on xw_rutting and xw_iri_qgis
 def left_join_dataframes(df_rutting, df_iri):
     return pd.merge(df_rutting, df_iri, how='left', on=['event_start', 'event_end', 'survey_code'], suffixes=('_rut', '_iri'))
 
-# Perform jpg file and frame number
 def get_jpg_filenames(directory):
     jpg_dict = {}
     for root, dirs, files in os.walk(directory):
@@ -319,7 +306,6 @@ def get_jpg_filenames(directory):
 
     return detailed_df
 
-# Perform add frame_num and frame_num_ch
 def add_frame_num_to_joined_df(joined_df, derived_values, frame_numbers):
     joined_df['frame_num_ch'] = pd.NA
     joined_df['frame_num'] = pd.NA
@@ -330,13 +316,12 @@ def add_frame_num_to_joined_df(joined_df, derived_values, frame_numbers):
     })
     
     for i, frame_num_ch in enumerate(derived_values):
-        mask = (joined_df['event_start'] <= frame_num_ch) & (joined_df['event_end'] > frame_num_ch)
+        mask = (joined_df['event_start'] <= frame_num_ch) & (joined_df['event_end'] >= frame_num_ch)
         joined_df.loc[mask, 'frame_num_ch'] = frame_num_ch
         joined_df.loc[mask, 'frame_num'] = frame_numbers[i]
         
     return joined_df
 
-# Perform fainal data frame
 def process_fainal_df(output_dir):
     frame_numbers_df = get_jpg_filenames(output_dir)  # This returns a DataFrame
     frame_numbers = frame_numbers_df['frame_num'].astype(int).tolist()
@@ -363,12 +348,12 @@ def process_fainal_df(output_dir):
     
     selected_columns = [
         'left_rutting', 'right_rutting', 'avg_rutting', 'event_start', 'event_end', 'survey_code',
-        'rut_point_x', 'rut_point_y', 'Date', 'iri left (m/km)', 'iri right (m/km)', 'iri', 'iri_lane', 
+        'rut_point_x', 'rut_point_y', 'date', 'iri 0 (m/km)', 'iri 1 (m/km)', 'iri', 'iri_lane', 
         'chainage', 'max_chainage', 'min_chainage', 'frame_num', 'frame_num_ch'
     ] 
     
     selected_columns = [col for col in selected_columns if col in final_df.columns]
-    # final_df = final_df[final_df['iri'].notnull()][selected_columns]
+    final_df = final_df[selected_columns]
     
     return final_df
 
@@ -379,7 +364,7 @@ def find_csv_files(start_dir, prefix='log_'):
             csv_files.append(os.path.join(dirpath, filename))
     return csv_files
 
-def main(final_df, output_dir):
+def process_data(final_df, output_dir):
     for survey_date in os.listdir(output_dir): # eg. base_dir = r"D:\xenomatixs"
         path = os.path.join(output_dir, survey_date, 'Output')
         mdb = os.path.join(output_dir, survey_date, 'Data')
@@ -392,16 +377,13 @@ def main(final_df, output_dir):
 
             folder_names = [name for name in os.listdir(path) if os.path.isdir(os.path.join(path, name))]
             for folder_name in folder_names:
-                print(f"🔄 Processing folder: {folder_name}")
+                log_message(f"🔄 Processing folder: {folder_name}")
                 
-                # edit
                 # Perform the initial merge and filter rows where frame_num is between numb_start and numb_end
-                merged_df = pd.merge(final_df, log_df, how='left', on=['survey_code'], suffixes=('_final_df', '_log_df'))                
-                merged_df = merged_df[(merged_df['frame_num'] >= merged_df['numb_start']) & 
-                                    (merged_df['frame_num'] <= merged_df['numb_end'])]
-                # edit
+                merged_df = pd.merge(final_df, log_df, how='left', on=['survey_code'], suffixes=('_final_df', '_log_df'))
+                # merged_df = merged_df[(merged_df['frame_num'] >= merged_df['numb_start']) & 
+                #                     (merged_df['frame_num'] <= merged_df['numb_end'])]
                 
-                # with out filter numb_start and numb_end
                 filtered_df = merged_df[merged_df['survey_code'] == folder_name]
                 run_code = re.sub(r'RUN0*(\d+)', r'_\1', folder_name)
                 
@@ -418,8 +400,8 @@ def main(final_df, output_dir):
                     df['chainage'] = df['chainage']
                     df['lon'] = df['rut_point_y']
                     df['lat'] = df['rut_point_x']
-                    df['iri_right'] = df['iri right (m/km)']
-                    df['iri_left'] = df['iri left (m/km)']
+                    df['iri_right'] = df['iri 0 (m/km)']
+                    df['iri_left'] = df['iri 1 (m/km)']
                     df['iri'] = df['iri']
                     df['iri_lane'] = df['iri_lane']
                     df['rutt_right'] = df['right_rutting']
@@ -472,7 +454,7 @@ def main(final_df, output_dir):
                     df['event_name'] = df['event_name'].str.lower()
                     df['link_id'] = df['linkid']
                     df['lane_no'] = df['linkid'].apply(lambda x: x[11:13])
-                    df['survey_date'] = df['date']
+                    df['survey_date'] = df['date_final_df']
                     df['lat_str'] = df.groupby(['survey_code', 'linkid'])['rut_point_x'].transform('first')
                     df['lat_end'] = df.groupby(['survey_code', 'linkid'])['rut_point_x'].transform('last')
                     df['lon_str'] = df.groupby(['survey_code', 'linkid'])['rut_point_y'].transform('first')
@@ -499,18 +481,11 @@ def main(final_df, output_dir):
                 mdb_folder_path = os.path.join(mdb, run_code)
                 # print(f'store in: {mdb_folder_path}')
                 mdb_path = os.path.join(mdb_folder_path, f'{run_code}_edit.mdb')
-                # print(f'this name: {mdb_path}')
+                print(f'this name: {mdb_path}')
             
                 if not os.path.isdir(mdb):
                     print(f"⛔ Directory not found: {mdb}")
                     continue
-                
-                # edit
-                filterss = final_df[final_df['survey_code'].str.strip() == folder_name.strip()]
-                filterss = filterss.dropna(subset=['frame_num','frame_num_ch'])
-                # filterss.to_csv(f'{mdb_folder_path}_edit.csv', index=False)
-                # print(f'filterss_{filterss}')
-                # edit
                 
                 def mdb_video_process(df):
                     df['CHAINAGE'] = df['chainage']
@@ -527,7 +502,7 @@ def main(final_df, output_dir):
 
                     return df
 
-                video_process = mdb_video_process(filterss)
+                video_process = mdb_video_process(filtered_df)
                 
                 selected_mdb_video_process = [
                     'CHAINAGE', 'LRP_OFFSET', 'LRP_NUMBER', 'FRAME', 'GPS_TIME', 
@@ -638,7 +613,7 @@ def main(final_df, output_dir):
                     df['km_end'] = df['km_end']
                     df['length'] = df['length']
                     df['lane_no'] = df['linkid'].apply(lambda x: x[11:13])
-                    df['survey_date'] = df['date']
+                    df['survey_date'] = df['date_final_df']
                     
                     return df
 
@@ -656,14 +631,14 @@ def main(final_df, output_dir):
                 mdb_KeyCode_Raw_filename = os.path.join(mdb_folder_path, f'KeyCode_Raw_{run_code}.csv')
                 KeyCode_Raw[selected_mdb_KeyCode_Raw].sort_values(by=['lane_no', 'CHAINAGE_START', 'CHAINAGE_END'], ascending=[True, True, False]).to_csv(mdb_KeyCode_Raw_filename, index=False)    
 # .mdb 
-# insert .mdb
+# # insert .mdb
                 def create_access_db(db_path):
                     if os.path.isfile(db_path):
                         print(f"⛔ File already exists: {db_path}")
                     else:
                         access_app = win32com.client.Dispatch("Access.Application")
                         access_app.NewCurrentDatabase(db_path)
-                        print(f"✅ Created new Access database at: {db_path}")
+                        log_message(f"✅ Created new Access database at: {db_path}")
                         access_app.Quit()
 
                 def table_exists(con, table_name):
@@ -750,136 +725,275 @@ def main(final_df, output_dir):
                 for csv_name in csv_files.keys():
                     os.remove(os.path.join(mdb_folder_path, csv_name))
 # insert .mdb
+    log_message(f"Successfully .MDB ...")
 
-# transfromimages
-def process_single_image(path, matrix, angle):
+def transfromimage(folder_input):
+    
+    matrix = np.asarray([
+        [-4.72213304e-01,6.07375445e+00, -2.36383184e+01],
+        [ 9.15608405e-01,  2.65031461e+00, -7.51851357e+02],
+        [-2.53338772e-04,  4.22432334e-03,  1.00000000e+00]
+    ])
+    
+    angle = -90
+    cpu = max(1, os.cpu_count() // 2)
+    
+    with ThreadPoolExecutor(max_workers=cpu) as executor:
+        futures = [executor.submit(process_single_image, root, image_test, matrix, angle) for root, dirs, files in os.walk(folder_input) 
+                   if 'PAVE-0' in root for image_test in tqdm.tqdm(files) if image_test.endswith('.jpg')]
+        
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Error processing image: {e}")
+
+def process_single_image(root, image_test, matrix, angle):
+    path = os.path.join(root, image_test)
     img_2 = cv2.imread(path)
-    img_2 = cv2.resize(img_2, (0, 0), fx=0.5, fy=0.5)
+    img_2 = cv2.resize(img_2, (0,0), fx=0.5, fy=0.5)
     corrected_img = cv2.warpPerspective(img_2, matrix, (1200, 1200))
-
+                    
     (h, w) = corrected_img.shape[:2]
     center = (w // 2, h // 2)
     rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
     rotated_img = cv2.warpAffine(corrected_img, rotation_matrix, (w, h))
+                    
     rotated_img = cv2.rotate(corrected_img, cv2.ROTATE_90_CLOCKWISE)
     cnv_img_rgb = cv2.cvtColor(rotated_img, cv2.COLOR_BGR2RGB)
-    
-    cv2.imwrite(path, cv2.cvtColor(cnv_img_rgb, cv2.COLOR_BGR2RGB))
+                    
+    if not os.path.exists(root):
+        print('PAVE : Folder does not exist')
+                    
+    cv2.imwrite(os.path.join(root,image_test),cv2.cvtColor(cnv_img_rgb, cv2.COLOR_BGR2RGB)) 
 
-def transfromimage(input_folder):
-    # Transformation matrix
-    matrix = np.asarray([[-4.72213304e-01, 6.07375445e+00, -2.36383184e+01],
-                         [9.15608405e-01, 2.65031461e+00, -7.51851357e+02],
-                         [-2.53338772e-04, 4.22432334e-03, 1.00000000e+00]])
-
-    angle = -90
-
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = []
-        for root, dirs, files in os.walk(input_folder):
-            if 'PAVE-0' in root:
-                for image_test in files:
-                    path = os.path.join(root, image_test)
-                    if path.endswith('.jpg'):
-                        futures.append(executor.submit(process_single_image, path, matrix, angle))
-            
-            for future in tqdm.tqdm(concurrent.futures.as_completed(futures)):
-                future.result()
-# transfromimages
+def move_folder(src, dest):
+    try:
+        shutil.move(src, dest)
+        log_message(f"📁 Moved folder {os.path.basename(src)} to processed.")
+    except Exception as e:
+        log_message(f"⛔ Error moving folder {os.path.basename(src)}: {str(e)}")
 
 def make_processed_file(base_dir):
     processed = os.path.join(base_dir, 'processed')
     input_dir = os.path.join(base_dir, 'input')
-    
-    for folder_name in os.listdir(input_dir):
-        if os.path.isdir(os.path.join(input_dir, folder_name)) and re.match(r'^\d{8}$', folder_name):
-            shutil.move(os.path.join(input_dir, folder_name), os.path.join(processed, folder_name))
 
-def select_base_dir():
-    """Open a dialog to select a base directory and update the entry field."""
-    base_dir = filedialog.askdirectory()
-    if base_dir:
-        entry_base_dir.delete(0, tk.END)
-        entry_base_dir.insert(0, base_dir)
+    os.makedirs(processed, exist_ok=True)  # Create processed directory if not exists
 
-def process_data():
-    """Process files from the selected base directory and update status."""
-    base_dir = os.path.normpath(entry_base_dir.get())
-    if not base_dir:
-        messagebox.showwarning("Warning", "Please select a base directory!")
-        return
+    folder_paths = [
+        os.path.join(input_dir, folder_name)
+        for folder_name in os.listdir(input_dir)
+        if os.path.isdir(os.path.join(input_dir, folder_name)) and re.match(r'^\d{8}$', folder_name)
+    ]
 
-    input_dir = os.path.join(base_dir, "input")
-    output_dir = os.path.join(base_dir, "output")
+    log_message(f"Found {len(folder_paths)} folders to process.")
 
-    status_label.config(text="Processing files...")
-    root.update_idletasks()
-    
+    # Use ThreadPoolExecutor to move folders in parallel
+    with ThreadPoolExecutor() as executor:
+        future_to_folder = {
+            executor.submit(move_folder, folder_path, os.path.join(processed, os.path.basename(folder_path))): folder_path
+            for folder_path in folder_paths
+        }
+
+        for future in as_completed(future_to_folder):
+            folder = future_to_folder[future]
+            try:
+                future.result()  # This will raise any exception from the thread
+            except Exception as e:
+                log_message(f"⛔ Error processing folder {os.path.basename(folder)}: {str(e)}")
+
+    log_message("🎉 All files moved successfully.")
+
+def main(base_dir, input_dir, output_dir, progress_callback=None):
     try:
-        log_message("🚀 Starting file processing...")
-        log_message(f"📂 Base directory: {base_dir}")
+        steps = 5  # Number of steps in the process
+        current_step = 0
+
+        log_message("🔄 Starting file processing...")
         
-        log_message("----------------------------------------------------------------------")
-
-        log_message(f"📁 Copying files {input_dir} to {output_dir}")
-        # copy_and_organize_files(input_dir, output_dir)
-        log_message(f"✔️ Files organized successfully.")
-
-        log_message(f"📝 Processing final dataframe...")
+        log_message("🔄 Organizing files...")
+        copy_and_organize_files(input_dir, output_dir)
+        current_step += 1
+        if progress_callback:
+            progress_callback(current_step / steps * 100)
+        log_message("✔️ Files organized successfully.")
+        
+        log_message("📝 Processing final dataframe...")
         final_df = process_fainal_df(output_dir)
-        log_message(f"✔️ Successfully Processing final dataframe.")
+        current_step += 1
+        if progress_callback:
+            progress_callback(current_step / steps * 100)
+        log_message("✔️ Final dataframe processed.")
+        
+        log_message("🔄 Running main function...")
+        process_data(final_df, output_dir)
+        current_step += 1
+        if progress_callback:
+            progress_callback(current_step / steps * 100)
+        log_message("✔️ Main function processing completed.")
+        
+        log_message("🔄 Processing transformimage...")
+        transfromimage(output_dir)
+        current_step += 1
+        if progress_callback:
+            progress_callback(current_step / steps * 100)
+        log_message("✔️ Transformimage completed.")
+        
+        log_message("🔄 Moving processed files...")
+        make_processed_file(base_dir)
+        current_step += 1
+        if progress_callback:
+            progress_callback(current_step / steps * 100)
+        log_message("✔️ Processed files moved successfully.")
 
-        log_message(f"🔄 Processing main function...")
-        main(final_df, output_dir)
-        log_message(f"✔️ Successfully Processing main function.")
-        
-        log_message(f"🔄 Processing TransfromsImages...")
-        # transfromimage(output_dir)
-        log_message(f"✔️ Successfully Processing TransfromsImages.")
-        
-        log_message(f"📦 Making Processed files in {base_dir}...")
-        # make_processed_file(base_dir)
-        log_message(f"✔️ Processed files generated.")
-
-        log_message(f"🎉 All files have been processed!. ")
-        log_message("🎉 Move Files Done.")
-        
-        status_label.config(text="Processing complete!")
-        messagebox.showinfo("Success", f"Processing completed successfully in {base_dir}!")
+        log_message("🎉 All files have been processed!")
     except Exception as e:
         log_message(f"⛔ Error: {str(e)}")
         traceback.print_exc() # type: ignore
-        status_label.config(text="Processing failed.")
-        messagebox.showerror("Error", f"An error occurred: {str(e)}")
+        raise
 
-def run_in_background():
-    thread = threading.Thread(target=process_data)
-    thread.start()
-    
+# ---------------------------------------------------------------- #
 
+class LineLoader:
+    ANIMATION_STEPS = ["⢿", "⣻", "⣽", "⣾", "⣷", "⣯", "⣟", "⡿"]
+
+    def __init__(self, desc="Loading...", end="Done!", timeout=0.1, label=None) -> None:
+        self._config = {"desc": desc, "end": end, "timeout": timeout}
+        self._done = False
+        self._lock = Lock()
+        self.label = label
+
+    def __enter__(self) -> None:
+        with self._lock:
+            self._done = False
+        self._thread = Thread(target=self._animate, daemon=True)
+        self._thread.start()
+
+    def _animate(self) -> None:
+        step_count = 0
+        try:
+            while True:
+                with self._lock:
+                    if self._done:
+                        break
+                if self.label:
+                    self.label.config(text=f"{self.ANIMATION_STEPS[step_count]} {self._config['desc']}")
+                time.sleep(self._config["timeout"])
+                step_count = (step_count + 1) % len(self.ANIMATION_STEPS)
+        except Exception as e:
+            pass
+
+    def __exit__(self, *args) -> None:
+        with self._lock:
+            self._done = True
+        if self.label:
+            self.label.config(text=self._config['end'])
+        self._thread.join()
+
+class MyApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Xeno Tool")
+
+        # Base directory
+        self.base_dir_label = ttk.Label(root, text="Base Directory:")
+        self.base_dir_label.grid(row=0, column=0, padx=5, pady=5, sticky="W")
+        self.base_dir_entry = ttk.Entry(root, width=50)
+        self.base_dir_entry.grid(row=0, column=1, padx=5, pady=5)
+        self.base_dir_browse = ttk.Button(root, text="Browse", command=self.select_base_dir)
+        self.base_dir_browse.grid(row=0, column=2, padx=5, pady=5)
+
+        # Start button
+        self.start_button = ttk.Button(root, text="Start Process", command=self.start_process)
+        self.start_button.grid(row=1, column=0, columnspan=3, pady=10)
+
+        # Progress bar
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(root, orient="horizontal", length=400, mode="determinate", variable=self.progress_var)
+        self.progress_bar.grid(row=2, column=0, columnspan=3, pady=10)
+
+        # Progress label
+        self.progress_label = ttk.Label(root, text="Progress: 0%")
+        self.progress_label.grid(row=3, column=0, columnspan=3, pady=5)
+        
+        # Animation label
+        self.animation_label = ttk.Label(root, text="")
+        self.animation_label.grid(row=4, column=0, columnspan=3, pady=5)
+
+    def select_base_dir(self):
+        """Open a dialog to select a base directory and update the entry field."""
+        base_dir = filedialog.askdirectory()
+        if base_dir:
+            self.base_dir_entry.delete(0, tk.END)
+            self.base_dir_entry.insert(0, base_dir)
+
+    def start_process(self):
+        base_dir = os.path.normpath(self.base_dir_entry.get())
+        if not base_dir:
+            messagebox.showwarning("Warning", "Please select a base directory!")
+            return
+
+        input_dir = os.path.join(base_dir, "input")
+        output_dir = os.path.join(base_dir, "output")
+
+        if not os.path.exists(input_dir):
+            messagebox.showerror("Error", f"Input directory does not exist: {input_dir}")
+            return
+
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        log_message("🔄 Starting file processing...")
+        log_message(f"📂 Base directory: {base_dir}")
+
+        self.progress_label.config(text="Processing files...")
+        self.progress_var.set(0)
+        
+        # Run the background task with a loading spinner
+        Thread(target=self.run_with_loader, args=(base_dir, input_dir, output_dir), daemon=True).start()
+
+    def run_with_loader(self, base_dir, input_dir, output_dir):
+        with LineLoader(desc="Processing", end="Completed", timeout=0.1, label=self.animation_label):
+            self.background_task(base_dir, input_dir, output_dir)
+                
+    def background_task(self, base_dir, input_dir, output_dir):
+            """Perform file processing task."""
+            def progress_callback(progress):
+                # Update the progress bar and label from the background task
+                self.root.after(0, self.update_progress, progress)
+
+            try:
+                main(base_dir, input_dir, output_dir, progress_callback)
+                self.root.after(0, self.task_completed)  # Schedule the task_completed method
+            except Exception as e:
+                log_message(f"⛔ Error: {str(e)}")
+                traceback.print_exc() # type: ignore
+                self.root.after(0, lambda: messagebox.showerror("Error", f"An error occurred: {str(e)}"))
+
+    def update_progress(self, progress):
+        """Update the progress bar and label."""
+        self.progress_var.set(progress)
+        self.progress_label.config(text=f"Progress: {int(progress)}%")
+
+    def task_completed(self):
+        """Called after the background task is finished."""
+        self.progress_label.config(text="Processing completed!")
+        self.progress_var.set(100)
+        log_message("🎉 All files processed successfully!")
+        messagebox.showinfo("Success", "Processing completed successfully!")
+
+# ---------------------------------------------------------------- #
 
 if __name__ == "__main__":
-    try:
-        root = tk.Tk()
-        root.title("Xeno UI")
-        root.geometry("600x400")
+    root = tk.Tk()
+    app = MyApp(root)
 
-        tk.Label(root, text="Base Directory:").pack(pady=5)
+    # Log area
+    log_text = tk.Text(root, height=15, width=70, state="normal")
+    log_text.grid(row=4, column=0, columnspan=3, pady=5)
 
-        entry_base_dir = tk.Entry(root, width=50)
-        entry_base_dir.pack(pady=5)
+    root.mainloop()
+    
+    
 
-        tk.Button(root, text="Browse", command=select_base_dir).pack(pady=5)
-        tk.Button(root, text="Process", command=process_data).pack(pady=10)
-
-        status_label = tk.Label(root, text=f"⌛ Status: Waiting for input...")
-        status_label.pack(pady=10)
-
-        log_text = tk.Text(root, height=15, width=70)
-        log_text.pack(pady=5)
-        
-        root.mainloop()
-    except Exception as e:
-        print(f"⛔ Error in the main block: {e}")
-        traceback.print_exc() # type: ignore
-
+# use this pyinstaller to compile the xeno_ui.py file || pyinstaller --onefile --noconsole --icon=icon.ico --name=XenoProsMaxPlus xeno_ui.py

@@ -1,23 +1,31 @@
 import os
 import re
+import cv2
+import tqdm
 import time
 import shutil
 import pyodbc
 import fnmatch
+import threading
 import numpy as np
 import pandas as pd
 import tkinter as tk
 import win32com.client
+import matplotlib.pyplot as plt
+from time import sleep
 from datetime import datetime
-from tkinter import filedialog, messagebox
+from threading import Thread, Lock
+from tkinter import ttk, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+
 pd.options.mode.chained_assignment = None  # default='warn'
+
 
 def log_message(message):
     """Append a message to the log_text widget and update the UI."""
     log_text.insert(tk.END, message + '\n')
-    log_text.see(tk.END)  # Auto-scroll to the end of the text
+    log_text.see(tk.END)
     root.update_idletasks()
 
 def copy_files(src_dst_pairs):
@@ -84,7 +92,7 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
             run_folder_path = os.path.join(data_folder_path, run_folder)
             if os.path.isdir(run_folder_path):
                 # Process Camera_GeoTagged
-                camera_geotagged_path = os.path.join(run_folder_path, 'Camera_GeoTagged')
+                camera_geotagged_path = os.path.join(run_folder_path, 'Camera')
                 if os.path.exists(camera_geotagged_path):
                     run_number = run_folder.replace(date_folder_name, "").replace("RUN", "").lstrip("0")
                     new_folder_name = f"{date_folder_name}_{run_number}"
@@ -153,11 +161,12 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
     except Exception as e:
         log_message(f"Error processing folder {date_folder_name}: {e}")
 
-def copy_and_organize_files(input_dir, output_dir):
+def copy_and_organize_files(input_dir, output_dir, progress_var, progress_label):
     try:
         os.makedirs(output_dir, exist_ok=True)
 
         date_folders = [folder_name for folder_name in os.listdir(input_dir) if re.match(r'^\d{8}$', folder_name)]
+        total_folders = len(date_folders)
 
         if not date_folders:
             log_message("No date folders found in the source directory.")
@@ -165,11 +174,14 @@ def copy_and_organize_files(input_dir, output_dir):
             with ThreadPoolExecutor(max_workers=100) as executor:
                 future_to_date_folder = {executor.submit(process_date_folder, date_folder_name, input_dir, output_dir): date_folder_name for date_folder_name in date_folders}
 
-                for future in as_completed(future_to_date_folder):
+                for i, future in enumerate(as_completed(future_to_date_folder)):
                     date_folder_name = future_to_date_folder[future]
                     try:
                         future.result()
                         log_message(f"✅ Processed folder: {date_folder_name} Successfully")
+                        progress_percentage = (i + 1) / total_folders * 100  # Calculate progress percentage
+                        progress_var.set(progress_percentage)  # Update progress bar
+                        progress_label.config(text=f"Progress: {int(progress_percentage)}%")  # Update label
                     except Exception as exc:
                         log_message(f"{date_folder_name} generated an exception: {exc}")
     except Exception as e:
@@ -207,10 +219,13 @@ def process_csv_files(path):
                 iri_df = pd.read_csv(file_path, delimiter=';')
                 iri_df.columns = iri_df.columns.str.strip()
                 survey_code = filename.split('_')[3].split('.')[0]
+                survey_date = survey_code[:8]
+                iri_df['Date'] = survey_date
                 iri_df['survey_code'] = survey_code
-                iri_df['iri'] = (iri_df['iri left (m/km)'] + iri_df['iri right (m/km)']) / 2
-                iri_df.drop(columns=['geometry'], errors='ignore', inplace=True)
-
+                print(iri_df.columns)
+                iri_df['iri'] = (iri_df['iri 0 (m/km)'] + iri_df['iri 1 (m/km)']) / 2
+                iri_df.drop(columns=['geometry (start_lonlat,end_lonlat)', 'Timestamps', 'Heading (degrees)', 'Speed (m/s)'], errors='ignore', inplace=True)
+                
                 # Generate random values for iri_lane
                 target_values = iri_df['iri']
                 num_parts = 4
@@ -243,8 +258,8 @@ def process_csv_files(path):
                 rut_df['chainage'] = rut_df['event_start']
                 survey_code = filename.split('_')[2].split('.')[0]
                 rut_df['survey_code'] = survey_code
-                rut_df['rut_point_x'] = rut_df['qgis_shape'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[1]))
-                rut_df['rut_point_y'] = rut_df['qgis_shape'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[0]))
+                rut_df['rut_point_x'] = rut_df['geometry (start_lonlat,end_lonlat)'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[1]))
+                rut_df['rut_point_y'] = rut_df['geometry (start_lonlat,end_lonlat)'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[0]))
                 
                 # Apply interpolation with a limit to avoid interpolating across large gaps
                 rut_df['rut_point_x'] = rut_df['rut_point_x'].interpolate(method='linear', limit_direction='both')
@@ -260,8 +275,8 @@ def process_csv_files(path):
                 rut_df['rut_point_x'].fillna(0, inplace=True)
                 rut_df['rut_point_y'].fillna(0, inplace=True)
             
-                rut_df.rename(columns={'#Date':'Date', 'left rutting height': 'left_rutting', 'right rutting height': 'right_rutting', 'average height': 'avg_rutting'}, inplace=True)
-                rut_df.drop(columns=['qgis_shape'], inplace=True)
+                rut_df.rename(columns={'left rutting height': 'left_rutting', 'right rutting height': 'right_rutting', 'average height': 'avg_rutting'}, inplace=True)
+                rut_df.drop(columns=['geometry (start_lonlat,end_lonlat)'], inplace=True)
 
                 all_rutting_dataframes.append(rut_df)
 
@@ -321,14 +336,14 @@ def add_frame_num_to_joined_df(joined_df, derived_values, frame_numbers):
     })
     
     for i, frame_num_ch in enumerate(derived_values):
-        mask = (joined_df['event_start'] <= frame_num_ch) & (joined_df['event_end'] > frame_num_ch)
+        mask = (joined_df['event_start'] <= frame_num_ch) & (joined_df['event_end'] >= frame_num_ch)
         joined_df.loc[mask, 'frame_num_ch'] = frame_num_ch
         joined_df.loc[mask, 'frame_num'] = frame_numbers[i]
         
     return joined_df
 
 # Perform fainal data frame
-def process_fainal_df(output_dir):
+def process_fainal_df(output_dir, progress_var):
     frame_numbers_df = get_jpg_filenames(output_dir)  # This returns a DataFrame
     frame_numbers = frame_numbers_df['frame_num'].astype(int).tolist()
     iri_dataframes, rutting_dataframes = process_csv_files(output_dir)
@@ -361,6 +376,7 @@ def process_fainal_df(output_dir):
     selected_columns = [col for col in selected_columns if col in final_df.columns]
     # final_df = final_df[final_df['iri'].notnull()][selected_columns]
     
+    progress_var.set(100)
     return final_df
 
 def find_csv_files(start_dir, prefix='log_'):
@@ -383,7 +399,7 @@ def main(final_df, output_dir):
 
             folder_names = [name for name in os.listdir(path) if os.path.isdir(os.path.join(path, name))]
             for folder_name in folder_names:
-                print(f"🔄 Processing folder: {folder_name}")
+                log_message(f"🔄 Processing folder: {folder_name}")
                 
                 # Perform the initial merge and filter rows where frame_num is between numb_start and numb_end
                 merged_df = pd.merge(final_df, log_df, how='left', on=['survey_code'], suffixes=('_final_df', '_log_df'))
@@ -400,14 +416,15 @@ def main(final_df, output_dir):
                 ).reset_index()
                 
                 merged_df = pd.merge(merged_df, filter_df, on=['numb_start', 'numb_end'], how='left')
+                print(merged_df)
                 filtered_df = pd.merge(filtered_df, filter_df, on=['numb_start', 'numb_end'], how='left')
 # csv
                 def process_val(df):
                     df['chainage'] = df['chainage']
                     df['lon'] = df['rut_point_y']
                     df['lat'] = df['rut_point_x']
-                    df['iri_right'] = df['iri right (m/km)']
-                    df['iri_left'] = df['iri left (m/km)']
+                    df['iri_right'] = df['iri 0 (m/km)']
+                    df['iri_left'] = df['iri 1 (m/km)']
                     df['iri'] = df['iri']
                     df['iri_lane'] = df['iri_lane']
                     df['rutt_right'] = df['right_rutting']
@@ -644,7 +661,7 @@ def main(final_df, output_dir):
                     else:
                         access_app = win32com.client.Dispatch("Access.Application")
                         access_app.NewCurrentDatabase(db_path)
-                        print(f"✅ Created new Access database at: {db_path}")
+                        log_message(f"✅ Created new Access database at: {db_path}")
                         access_app.Quit()
 
                 def table_exists(con, table_name):
@@ -731,11 +748,126 @@ def main(final_df, output_dir):
                 for csv_name in csv_files.keys():
                     os.remove(os.path.join(mdb_folder_path, csv_name))
 # insert .mdb
-    log_message(f"🎉 All files have been processed!. ")
+
+# transfromimages
+def transfromimage(folder_input):
+    
+    matrix = np.asarray([
+        [-4.72213304e-01,6.07375445e+00, -2.36383184e+01],
+        [ 9.15608405e-01,  2.65031461e+00, -7.51851357e+02],
+        [-2.53338772e-04,  4.22432334e-03,  1.00000000e+00]
+    ])
+    
+    angle = -90
+    cpu = max(1, os.cpu_count() // 2)
+    
+    with ThreadPoolExecutor(max_workers=cpu) as executor:
+        futures = [executor.submit(process_single_image, root, image_test, matrix, angle) for root, dirs, files in os.walk(folder_input) 
+                   if 'PAVE-0' in root for image_test in tqdm.tqdm(files) if image_test.endswith('.jpg')]
+        
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Error processing image: {e}")
+
+def process_single_image(root, image_test, matrix, angle):
+    path = os.path.join(root, image_test)
+    img_2 = cv2.imread(path)
+    img_2 = cv2.resize(img_2, (0,0), fx=0.5, fy=0.5)
+    corrected_img = cv2.warpPerspective(img_2, matrix, (1200, 1200))
+                    
+    (h, w) = corrected_img.shape[:2]
+    center = (w // 2, h // 2)
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated_img = cv2.warpAffine(corrected_img, rotation_matrix, (w, h))
+                    
+    rotated_img = cv2.rotate(corrected_img, cv2.ROTATE_90_CLOCKWISE)
+    cnv_img_rgb = cv2.cvtColor(rotated_img, cv2.COLOR_BGR2RGB)
+                    
+    if not os.path.exists(root):
+        print('PAVE : Folder does not exist')
+                    
+    cv2.imwrite(os.path.join(root,image_test),cv2.cvtColor(cnv_img_rgb, cv2.COLOR_BGR2RGB))
+
+def start_image_processing(folder_input):
+    threading.Thread(target=transfromimage, args=(folder_input,), daemon=True).start()
+    
+    log_message(f"Starting file processing in {folder_input}...")
+    processing_thread = threading.Thread(target=transfromimage, args=(folder_input,), daemon=True)
+    processing_thread.start()    
+# transfromimages
+
+# edit 
+def start_copy_and_organize_files(input_dir, output_dir, progress_var, progress_label):
+    def worker():
+        try:
+            copy_and_organize_files(input_dir, output_dir, progress_var, progress_label)
+            log_message("✅ All folders processed successfully.")
+        except Exception as e:
+            log_message(f"❌ Error occurred during processing: {e}")
+
+    processing_thread = threading.Thread(target=worker, daemon=True)
+    processing_thread.start()
+# edit
+
+# edit
+class BaseLoader:
+    ANIMATION_STEPS = []
+    VALID_POSITIONS = ["front", "end"]
+
+    def __init__(self, desc: str = "Loading...", end: str = "Done!", timeout: float = 0.1, position: str = "front", label=None) -> None:
+        self._config = {"desc": desc, "end": end, "timeout": timeout, "position": position}
+        self._done = False
+        self._lock = Lock()
+        self.label = label  # Label to update in the GUI
+
+        if self._config["position"] not in self.VALID_POSITIONS:
+            raise ValueError(f"Invalid position: {self._config['position']}. Choose either 'front' or 'end'.")
+        if not self.ANIMATION_STEPS:
+            raise ValueError("ANIMATION_STEPS must be defined in derived classes and cannot be empty.")
+
+    def __enter__(self) -> None:
+        with self._lock:
+            self._done = False
+        self._thread = Thread(target=self._animate, daemon=True)
+        self._thread.start()
+
+    def _animate(self) -> None:
+        step_count = 0
+        try:
+            while True:
+                with self._lock:
+                    if self._done:
+                        break
+                prefix, suffix = (
+                    (self.ANIMATION_STEPS[step_count], self._config['desc'])
+                    if self._config["position"] == "front"
+                    else (self._config['desc'], self.ANIMATION_STEPS[step_count])
+                )
+                if self.label:  # Update the label in the GUI
+                    self.label.config(text=f"{prefix} {suffix}")
+                sleep(self._config["timeout"])
+                step_count = (step_count + 1) % len(self.ANIMATION_STEPS)
+        except KeyboardInterrupt:
+            pass
+
+    def __exit__(self, *args) -> None:
+        with self._lock:
+            self._done = True
+        if self.label:  # Clear the label when done
+            self.label.config(text=self._config['end'])
+        self._thread.join()
+
+class LineLoader(BaseLoader):
+    ANIMATION_STEPS = ["⢿", "⣻", "⣽", "⣾", "⣷", "⣯", "⣟", "⡿"]
+# edit
+
+
 
 def make_processed_file(base_dir):
     processed = os.path.join(base_dir, 'processed')
-    input_dir = os.path.join(base_dir, 'input')
+    input_dir = os.path.join(base_dir, 'input') 
     
     for folder_name in os.listdir(input_dir):
         if os.path.isdir(os.path.join(input_dir, folder_name)) and re.match(r'^\d{8}$', folder_name):
@@ -750,8 +882,7 @@ def select_base_dir():
         entry_base_dir.delete(0, tk.END)
         entry_base_dir.insert(0, base_dir)
 
-def process_data():
-    """Process files from the selected base directory and update status."""
+def process_data(progress_var, progress_label):
     base_dir = os.path.normpath(entry_base_dir.get())
     if not base_dir:
         messagebox.showwarning("Warning", "Please select a base directory!")
@@ -764,25 +895,31 @@ def process_data():
     root.update_idletasks()
     
     try:
-        log_message("🚀 Starting file processing...")
+        log_message("🔄 Starting file processing...")
         log_message(f"📂 Base directory: {base_dir}")
 
-        # Simulate file processing steps and log progress
-        log_message(f"📁 Copying files from {input_dir} to {output_dir}...")
-        copy_and_organize_files(input_dir, output_dir)
-        log_message(f"✔️ Files organized successfully.")
+        with LineLoader("Processing...", "Done!"):
+            log_message(f"🔄 Copying files from {input_dir} to {output_dir}...")
+            start_copy_and_organize_files(input_dir, output_dir, progress_var, progress_label)
+            log_message(f"✔️ Files organized successfully.")
+            
+            log_message(f"📝 Processing final dataframe...")
+            final_df = process_fainal_df(output_dir, progress_var)
+            log_message(f"✔️ Final dataframe processed.")
 
-        log_message(f"📝 Processing final dataframe...")
-        final_df = process_fainal_df(output_dir)
-        log_message(f"✔️ Final dataframe processed.")
-
-        log_message(f"🔄 Running main function...")
-        main(final_df, output_dir)
-        log_message(f"✔️ Main processing completed.")
-
-        log_message(f"📦 Making processed files in {base_dir}...")
-        make_processed_file(base_dir)
-        log_message(f"✔️ Processed files generated.")
+            log_message(f"🔄 Running main function...")
+            main(final_df, output_dir)
+            log_message(f"✔️ Main function processing completed.")
+            
+            log_message(f"🔄 Processing transfromimage...")
+            start_image_processing(output_dir)
+            log_message(f"✔️ Transfromimage completed...")
+            
+            log_message(f"📦 Making processed files in {base_dir}...")
+            make_processed_file(base_dir)
+            log_message(f"✔️ Processed files generated.")
+            
+            log_message(f"🎉 All files have been processed!. ")
 
         status_label.config(text="Processing complete!")
         messagebox.showinfo("Success", f"Processing completed successfully in {base_dir}!")
@@ -792,8 +929,10 @@ def process_data():
         status_label.config(text="Processing failed.")
         messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
-
-
+# def run_in_background(progress_var):
+#     thread = threading.Thread(target=process_data, args=(progress_var,progress_label))
+#     thread.start()
+    
 if __name__ == "__main__":
     try:
         root = tk.Tk()
@@ -806,13 +945,24 @@ if __name__ == "__main__":
         entry_base_dir.pack(pady=5)
 
         tk.Button(root, text="Browse", command=select_base_dir).pack(pady=5)
-        tk.Button(root, text="Process", command=process_data).pack(pady=10)
+        # tk.Button(root, text="Process", command=process_data).pack(pady=10)
+        tk.Button(root, text="Process", command=lambda: process_data(progress_var, progress_label)).pack(pady=10)
+        # tk.Button(root, text="Process", command=lambda: run_in_background(progress_var)).pack(pady=10)
 
         status_label = tk.Label(root, text=f"⌛ Status: Waiting for input...")
         status_label.pack(pady=10)
 
         log_text = tk.Text(root, height=15, width=70)
         log_text.pack(pady=5)
+
+        # Progress bar
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(root, variable=progress_var, maximum=100)
+        progress_bar.pack(pady=10, fill=tk.X)
+        
+        # Progress label
+        progress_label = tk.Label(root, text="Progress: 0%")
+        progress_label.pack(pady=10)
         
         root.mainloop()
     except Exception as e:

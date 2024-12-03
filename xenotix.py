@@ -1,12 +1,16 @@
 import os
 import re
+import cv2
+import tqdm
 import time
 import shutil
 import pyodbc
 import fnmatch
+import threading
 import numpy as np
 import pandas as pd
 import win32com.client
+import matplotlib.pyplot as plt
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -84,7 +88,10 @@ def process_date_folder(date_folder_name, input_dir, output_dir):
             run_folder_path = os.path.join(data_folder_path, run_folder)
             if os.path.isdir(run_folder_path):
                 # Process Camera_GeoTagged
-                camera_geotagged_path = os.path.join(run_folder_path, 'Camera_GeoTagged')
+                    #  edit folder ---
+                # camera_geotagged_path = os.path.join(run_folder_path, 'Camera_GeoTagged           ')
+                # camera_geotagged_path = os.path.join(run_folder_path, 'Camera_GeoTagged') -- old version
+                camera_geotagged_path = os.path.join(run_folder_path, 'Camera')
                 if os.path.exists(camera_geotagged_path):
                     run_number = run_folder.replace(date_folder_name, "").replace("RUN", "").lstrip("0")
                     new_folder_name = f"{date_folder_name}_{run_number}"
@@ -194,8 +201,9 @@ def generate_parts(target_values, num_parts, tolerance):
 
 # Find all relevant CSV files and process them
 def process_csv_files(path):
-    all_iri_dataframes = [] # empty list
-    all_rutting_dataframes = [] # empty list
+    """ create the empty list """
+    all_iri_dataframes = []
+    all_rutting_dataframes = []
     
     for root, dirs, files in os.walk(path):
         # Find files
@@ -204,33 +212,54 @@ def process_csv_files(path):
 
         # Process 'xw_iri_qgis' files
         for filename in iri_files:
+            """ load csv to iri_df and remove space """
             file_path = os.path.join(root, filename)
             iri_df = pd.read_csv(file_path, delimiter=';')
             iri_df.columns = iri_df.columns.str.strip()
+            """ load csv to iri_df and remove space """
+            
+            """ split filename to get survey_code """
             survey_code = filename.split('_')[3].split('.')[0]
+            survey_date = survey_code[:8]
+            iri_df['date'] = survey_date
             iri_df['survey_code'] = survey_code
-            iri_df['iri'] = (iri_df['iri left (m/km)'] + iri_df['iri right (m/km)']) / 2
-            iri_df.drop(columns=['geometry'], errors='ignore', inplace=True)
-
-            # Generate random values for iri_lane
+            """ split filename to get survey_code """
+            
+            """ create column iri with 'iri left' + 'iri right' / 2 and drop column geometry """
+            # iri_df['iri'] = (iri_df['iri left (m/km)'] + iri_df['iri right (m/km)']) / 2 
+            iri_df['iri'] = (iri_df['iri 0 (m/km)'] + iri_df['iri 1 (m/km)']) / 2
+            iri_df.drop(columns=['geometry (start_lonlat,end_lonlat)', 'Timestamps', 'Heading (degrees)', 'Speed (m/s)'], errors='ignore', inplace=True)
+            """ create column iri with 'iri left' + 'iri right' / 2 and drop column geometry """
+            
+            """ create column iri_lane with Generate random values """
             target_values = iri_df['iri']
             num_parts = 4
             tolerance = 0.3
             parts_list = generate_parts(target_values, num_parts, tolerance)
-
-            # Expand DataFrame by repeating the rows
+            
             iri_df = iri_df.loc[iri_df.index.repeat(num_parts)].reset_index(drop=True)
             iri_df['iri_lane'] = np.concatenate(parts_list)
+            """ create column iri_lane with Generate random values """
 
+            """ 
+            create column event_start event_end with defind increment 5 to output 
+            -------------
+            |    0,5    |
+            |    5,10   |
+            |    10,15  | 
+            -------------
+            """
             increment = 5 if fnmatch.fnmatch(filename, '*xw_iri_qgis*') else 5
             iri_df['event_start'] = range(0, len(iri_df) * increment, increment)
             iri_df['event_end'] = iri_df['event_start'] + increment
-
+            """ create column event_start event_end with defind increment 5 """
+            
             # Append the processed IRI DataFrame to the list
             all_iri_dataframes.append(iri_df)
 
         # Process 'xw_rutting' files
         for filename in rutting_files:
+            """ load csv to iri_df remove unnecessary column and remove space """
             file_path = os.path.join(root, filename)
             rut_df = pd.read_csv(file_path, delimiter=';')
             rut_df.columns = rut_df.columns.str.strip()
@@ -238,32 +267,48 @@ def process_csv_files(path):
                 rut_df.drop(columns=['Unnamed: 5'], inplace=True, errors='ignore')
             else:
                 pass
+            """ load csv to iri_df remove unnecessary column and remove space """
+            
+            """ 
+            create column event_start event_end with defind increment 5 to output 
+            -------------
+            |    0,5    |
+            |    5,10   |
+            |    10,15  | 
+            -------------
+            and create column chainage with column event_start
+            """
             increment = 5 if fnmatch.fnmatch(filename, '*xw_rutting*') else 5
             rut_df['event_start'] = range(0, len(rut_df) * increment, increment)
             rut_df['event_end'] = rut_df['event_start'] + increment
             rut_df['chainage'] = rut_df['event_start']
+            """ create column event_start event_end with defind increment 5 to output and create column chainage with column event_start """
+            
+            """ split filename to get survey_code """
             survey_code = filename.split('_')[2].split('.')[0]
             rut_df['survey_code'] = survey_code
-            rut_df['rut_point_x'] = rut_df['qgis_shape'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[1]))
-            rut_df['rut_point_y'] = rut_df['qgis_shape'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[0]))
+            """ split filename to get survey_code """
             
+            """ create x,y with column geometry (start_lonlat,end_lonlat) and interpolate loss x,y and fill nan to 0 """
+            rut_df['rut_point_x'] = rut_df['geometry (start_lonlat,end_lonlat)'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[1]))
+            rut_df['rut_point_y'] = rut_df['geometry (start_lonlat,end_lonlat)'].apply(lambda x: float(x.split('(')[1].split(')')[0].split(',')[0].split(' ')[0]))
             # Apply interpolation with a limit to avoid interpolating across large gaps
             rut_df['rut_point_x'] = rut_df['rut_point_x'].interpolate(method='linear', limit_direction='both')
             rut_df['rut_point_y'] = rut_df['rut_point_y'].interpolate(method='linear', limit_direction='both')
-
             # Forward/backward fill to close gaps
             rut_df['rut_point_x'].fillna(method='ffill', inplace=True)
             rut_df['rut_point_x'].fillna(method='bfill', inplace=True)
             rut_df['rut_point_y'].fillna(method='ffill', inplace=True)
             rut_df['rut_point_y'].fillna(method='bfill', inplace=True)
-
             # Replace remaining NaN values with 0 (optional)
             rut_df['rut_point_x'].fillna(0, inplace=True)
             rut_df['rut_point_y'].fillna(0, inplace=True)
-        
-            rut_df.rename(columns={'#Date':'Date', 'left rutting height': 'left_rutting', 'right rutting height': 'right_rutting', 'average height': 'avg_rutting'}, inplace=True)
-            rut_df.drop(columns=['qgis_shape'], inplace=True)
-
+            """ create x,y with column geometry (start_lonlat,end_lonlat) and interpolate loss x,y and fill nan to 0 """
+            
+            # rut_df.rename(columns={'#Date':'Date', 'left rutting height': 'left_rutting', 'right rutting height': 'right_rutting', 'average height': 'avg_rutting'}, inplace=True)
+            rut_df.rename(columns={'left rutting height': 'left_rutting', 'right rutting height': 'right_rutting', 'average height': 'avg_rutting'}, inplace=True)
+            rut_df.drop(columns=['geometry (start_lonlat,end_lonlat)', 'Timestamps', 'Heading (degrees)', 'Speed (m/s)'], errors='ignore', inplace=True)
+            
             all_rutting_dataframes.append(rut_df)
 
     if all_iri_dataframes:
@@ -278,15 +323,16 @@ def process_csv_files(path):
         
     print(f"✅ Finished processing: .CSV files.")
     return iri_dataframes, rutting_dataframes
-
 # edit 9/9
 
 # Perform the left join on xw_rutting and xw_iri_qgis
 def left_join_dataframes(df_rutting, df_iri):
+    """ left join iri rut with event_start event_end survey_code """
     return pd.merge(df_rutting, df_iri, how='left', on=['event_start', 'event_end', 'survey_code'], suffixes=('_rut', '_iri'))
 
 # Perform jpg file and frame number
 def get_jpg_filenames(directory):
+    """ This function scans a specified directory for `.jpg` files, counts the number of files found in each subdirectory and creates a DataFrame """
     jpg_dict = {}
     for root, dirs, files in os.walk(directory):
         jpg_files = [f for f in files if f.endswith('.jpg')]
@@ -311,6 +357,27 @@ def get_jpg_filenames(directory):
     return detailed_df
 
 def add_frame_num_to_joined_df(joined_df, derived_values, frame_numbers):
+    """
+    This function adds two new columns, 'frame_num_ch' and 'frame_num', to the provided `joined_df`. 
+    These columns are populated based on a mapping of derived values to frame numbers, 
+    and the rows where the conditions are met (`event_start` <= `frame_num_ch` <= `event_end`).
+    Parameters:
+    ----------
+    joined_df : pd.DataFrame
+        The input DataFrame that contains at least 'event_start' and 'event_end' columns. 
+        These are used to determine the rows where the frame numbers should be added.
+        
+    derived_values : list of Rule of Three 
+        Useing : "round((max_event_start * num) / max(frame_numbers)) for num in frame_numbers" 
+        representing the derived values to be mapped to the 'frame_num_ch' column in `joined_df`.
+        
+    frame_numbers : list of frame_number Eg. {1,2,3,4,5}
+    Returns:
+    -------
+    pd.DataFrame
+        - 'frame_num_ch': The derived frame numbers assigned based on the conditions.
+        - 'frame_num': The corresponding frame numbers for the derived values.
+    """
     joined_df['frame_num_ch'] = pd.NA
     joined_df['frame_num'] = pd.NA
     
@@ -320,7 +387,8 @@ def add_frame_num_to_joined_df(joined_df, derived_values, frame_numbers):
     })
     
     for i, frame_num_ch in enumerate(derived_values):
-        mask = (joined_df['event_start'] <= frame_num_ch) & (joined_df['event_end'] > frame_num_ch)
+        mask = (joined_df['event_start'] <= frame_num_ch) & (joined_df['event_end'] >= frame_num_ch) # ใช้ <= กับ >= ผลลัพธ์ควรจะเบิ้ลแต่ไม่เบิ้ลและไช่วงไม่กระโดด งงมากคุณน้า
+        #mask = (joined_df['event_start'] <= frame_num_ch) & (joined_df['event_end'] > frame_num_ch) # ใช้ <= กับ > แล้วทำให้ค่ากระโด
         joined_df.loc[mask, 'frame_num_ch'] = frame_num_ch
         joined_df.loc[mask, 'frame_num'] = frame_numbers[i]
         
@@ -345,19 +413,19 @@ def process_fainal_df(output_dir):
     # Calculate derived values
     derived_values = [round((max_event_start * num) / max(frame_numbers)) for num in frame_numbers]
 
-    # Add frame numbers to the joined DataFrame
+    # # Add frame numbers to the joined DataFrame
     final_df = add_frame_num_to_joined_df(joined_df, derived_values, frame_numbers)
     
     final_df = final_df.rename(columns={'rut_chainage':'chainage'})
     
     selected_columns = [
         'left_rutting', 'right_rutting', 'avg_rutting', 'event_start', 'event_end', 'survey_code',
-        'rut_point_x', 'rut_point_y', 'Date', 'iri left (m/km)', 'iri right (m/km)', 'iri', 'iri_lane', 
+        'rut_point_x', 'rut_point_y', 'date', 'iri 0 (m/km)', 'iri 1 (m/km)', 'iri', 'iri_lane', 
         'chainage', 'max_chainage', 'min_chainage', 'frame_num', 'frame_num_ch'
     ] 
     
     selected_columns = [col for col in selected_columns if col in final_df.columns]
-    # final_df = final_df[final_df['iri'].notnull()][selected_columns]
+    final_df = final_df[selected_columns]
     
     return final_df
 # edit 9/9
@@ -374,20 +442,25 @@ def main(final_df, output_dir):
         path = os.path.join(output_dir, survey_date, 'Output')
         mdb = os.path.join(output_dir, survey_date, 'Data')
         
+        # print(final_df)
+        
         log_csv_files = find_csv_files(path)
         if log_csv_files:
             log_df = pd.read_excel(log_csv_files[0])
             log_df.rename(columns={'ผิว': 'event_name', 'link_id ระบบ': 'section_id'}, inplace=True)
             log_df.columns = log_df.columns.str.strip()
+            
+            # print(log_df)
 
             folder_names = [name for name in os.listdir(path) if os.path.isdir(os.path.join(path, name))]
+            print(folder_names)
             for folder_name in folder_names:
                 print(f"🔄 Processing folder: {folder_name}")
                 
                 # Perform the initial merge and filter rows where frame_num is between numb_start and numb_end
                 merged_df = pd.merge(final_df, log_df, how='left', on=['survey_code'], suffixes=('_final_df', '_log_df'))
-                merged_df = merged_df[(merged_df['frame_num'] >= merged_df['numb_start']) & 
-                                    (merged_df['frame_num'] <= merged_df['numb_end'])]
+                # merged_df = merged_df[(merged_df['frame_num'] >= merged_df['numb_start']) & 
+                #                     (merged_df['frame_num'] <= merged_df['numb_end'])]
                 
                 filtered_df = merged_df[merged_df['survey_code'] == folder_name]
                 run_code = re.sub(r'RUN0*(\d+)', r'_\1', folder_name)
@@ -398,15 +471,24 @@ def main(final_df, output_dir):
                     max_chainage=('chainage', 'max')
                 ).reset_index()
                 
+                print(survey_date)
+                
                 merged_df = pd.merge(merged_df, filter_df, on=['numb_start', 'numb_end'], how='left')
                 filtered_df = pd.merge(filtered_df, filter_df, on=['numb_start', 'numb_end'], how='left')
+                
+#     return merged_df
+# # --
+# base_dir = r"E:\xeno1030"
+# output_dir = os.path.join(base_dir, "output")
+# final_df = process_fainal_df(output_dir)
+# merged_df = main(final_df, output_dir)
 # csv
                 def process_val(df):
                     df['chainage'] = df['chainage']
                     df['lon'] = df['rut_point_y']
                     df['lat'] = df['rut_point_x']
-                    df['iri_right'] = df['iri right (m/km)']
-                    df['iri_left'] = df['iri left (m/km)']
+                    df['iri_right'] = df['iri 0 (m/km)']
+                    df['iri_left'] = df['iri 1 (m/km)']
                     df['iri'] = df['iri']
                     df['iri_lane'] = df['iri_lane']
                     df['rutt_right'] = df['right_rutting']
@@ -459,7 +541,7 @@ def main(final_df, output_dir):
                     df['event_name'] = df['event_name'].str.lower()
                     df['link_id'] = df['linkid']
                     df['lane_no'] = df['linkid'].apply(lambda x: x[11:13])
-                    df['survey_date'] = df['date']
+                    df['survey_date'] = df['date_final_df']
                     df['lat_str'] = df.groupby(['survey_code', 'linkid'])['rut_point_x'].transform('first')
                     df['lat_end'] = df.groupby(['survey_code', 'linkid'])['rut_point_x'].transform('last')
                     df['lon_str'] = df.groupby(['survey_code', 'linkid'])['rut_point_y'].transform('first')
@@ -618,7 +700,7 @@ def main(final_df, output_dir):
                     df['km_end'] = df['km_end']
                     df['length'] = df['length']
                     df['lane_no'] = df['linkid'].apply(lambda x: x[11:13])
-                    df['survey_date'] = df['date']
+                    df['survey_date'] = df['date_final_df']
                     
                     return df
 
@@ -732,6 +814,53 @@ def main(final_df, output_dir):
 # insert .mdb
     print(f"🎉 All files have been processed!. ")
 
+# transfromimages
+def transfromimage(folder_input):
+    
+    matrix = np.asarray([
+        [-4.72213304e-01,6.07375445e+00, -2.36383184e+01],
+        [ 9.15608405e-01,  2.65031461e+00, -7.51851357e+02],
+        [-2.53338772e-04,  4.22432334e-03,  1.00000000e+00]
+    ])
+    
+    angle = -90
+    cpu = max(1, os.cpu_count() // 2)
+    
+    with ThreadPoolExecutor(max_workers=cpu) as executor:
+        futures = [executor.submit(process_single_image, root, image_test, matrix, angle) for root, dirs, files in os.walk(folder_input) 
+                   if 'PAVE-0' in root for image_test in tqdm.tqdm(files) if image_test.endswith('.jpg')]
+        
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Error processing image: {e}")
+
+def process_single_image(root, image_test, matrix, angle):
+    path = os.path.join(root, image_test)
+    img_2 = cv2.imread(path)
+    img_2 = cv2.resize(img_2, (0,0), fx=0.5, fy=0.5)
+    corrected_img = cv2.warpPerspective(img_2, matrix, (1200, 1200))
+                    
+    (h, w) = corrected_img.shape[:2]
+    center = (w // 2, h // 2)
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated_img = cv2.warpAffine(corrected_img, rotation_matrix, (w, h))
+                    
+    rotated_img = cv2.rotate(corrected_img, cv2.ROTATE_90_CLOCKWISE)
+    cnv_img_rgb = cv2.cvtColor(rotated_img, cv2.COLOR_BGR2RGB)
+                   
+    # plt.imshow(cv2.cvtColor(cnv_img_rgb, cv2.COLOR_BGR2RGB))
+    # plt.title('Corrected Image')
+    # plt.axis('off')
+    # plt.show()
+                    
+    if not os.path.exists(root):
+        print('PAVE : Folder does not exist')
+                    
+    cv2.imwrite(os.path.join(root,image_test),cv2.cvtColor(cnv_img_rgb, cv2.COLOR_BGR2RGB))
+# transfromimages
+
 def make_processed_file(base_dir):
     processed = os.path.join(base_dir, 'processed')
     input_dir = os.path.join(base_dir, 'input')
@@ -751,12 +880,15 @@ def make_processed_file(base_dir):
 
 if __name__ == "__main__":
     try:
-        base_dir = r"D:\xenomatix"
+        base_dir = r"E:\xeno1030"
         input_dir = os.path.join(base_dir, "input")
         output_dir = os.path.join(base_dir, "output")
         # copy_and_organize_files(input_dir, output_dir)
+        # 
+        # iri_dataframes, rutting_dataframes = process_csv_files(output_dir)
+        # 
         final_df = process_fainal_df(output_dir)
-        main(final_df)
+        main(final_df, output_dir)
         # make_processed_file(base_dir)
     except Exception as e:
         print(f"⛔ Error in the main block: {e}")
