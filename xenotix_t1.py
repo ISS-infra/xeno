@@ -1,7 +1,6 @@
 import os
 import re
 import cv2
-import tqdm
 import time
 import shutil
 import pyodbc
@@ -11,6 +10,7 @@ import numpy as np
 import pandas as pd
 import tkinter as tk
 import win32com.client
+import concurrent.futures
 import matplotlib.pyplot as plt
 from time import sleep
 from datetime import datetime
@@ -750,45 +750,50 @@ def main(final_df, output_dir):
 # insert .mdb
 
 # transfromimages
-def transfromimage(folder_input):
-    
-    matrix = np.asarray([
-        [-4.72213304e-01,6.07375445e+00, -2.36383184e+01],
-        [ 9.15608405e-01,  2.65031461e+00, -7.51851357e+02],
-        [-2.53338772e-04,  4.22432334e-03,  1.00000000e+00]
-    ])
-    
-    angle = -90
-    cpu = max(1, os.cpu_count() // 2)
-    
-    with ThreadPoolExecutor(max_workers=cpu) as executor:
-        futures = [executor.submit(process_single_image, root, image_test, matrix, angle) for root, dirs, files in os.walk(folder_input) 
-                   if 'PAVE-0' in root for image_test in tqdm.tqdm(files) if image_test.endswith('.jpg')]
-        
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"Error processing image: {e}")
+def process_single_image(path, matrix, angle):
+    try:
+        img_2 = cv2.imread(path)
+        img_2 = cv2.resize(img_2, (0, 0), fx=0.5, fy=0.5)
+        corrected_img = cv2.warpPerspective(img_2, matrix, (1200, 1200))
 
-def process_single_image(root, image_test, matrix, angle):
-    path = os.path.join(root, image_test)
-    img_2 = cv2.imread(path)
-    img_2 = cv2.resize(img_2, (0,0), fx=0.5, fy=0.5)
-    corrected_img = cv2.warpPerspective(img_2, matrix, (1200, 1200))
-                    
-    (h, w) = corrected_img.shape[:2]
-    center = (w // 2, h // 2)
-    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated_img = cv2.warpAffine(corrected_img, rotation_matrix, (w, h))
-                    
-    rotated_img = cv2.rotate(corrected_img, cv2.ROTATE_90_CLOCKWISE)
-    cnv_img_rgb = cv2.cvtColor(rotated_img, cv2.COLOR_BGR2RGB)
-                    
-    if not os.path.exists(root):
-        print('PAVE : Folder does not exist')
-                    
-    cv2.imwrite(os.path.join(root,image_test),cv2.cvtColor(cnv_img_rgb, cv2.COLOR_BGR2RGB))
+        (h, w) = corrected_img.shape[:2]
+        center = (w // 2, h // 2)
+        rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        rotated_img = cv2.warpAffine(corrected_img, rotation_matrix, (w, h))
+        rotated_img = cv2.rotate(corrected_img, cv2.ROTATE_90_CLOCKWISE)
+        cnv_img_rgb = cv2.cvtColor(rotated_img, cv2.COLOR_BGR2RGB)
+        
+        # cv2.imwrite(path, cv2.cvtColor(cnv_img_rgb, cv2.COLOR_BGR2RGB))
+        
+        success = cv2.imwrite(path, cv2.cvtColor(cnv_img_rgb, cv2.COLOR_BGR2RGB))
+        if not success:
+            log_message(f"Error in process_single_image to {path}")
+    except Exception as e:
+        log_message(f"Error in process_single_image: {e}")
+        
+def transfromimage(input_folder):
+    # Transformation matrix
+    matrix = np.asarray([[-4.72213304e-01, 6.07375445e+00, -2.36383184e+01],
+                         [9.15608405e-01, 2.65031461e+00, -7.51851357e+02],
+                         [-2.53338772e-04, 4.22432334e-03, 1.00000000e+00]])
+
+    angle = -90 
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = []
+            for root, dirs, files in os.walk(input_folder):
+                if 'PAVE-0' in root:
+                    for image_test in files:
+                        path = os.path.join(root, image_test)
+                        if path.endswith('.jpg'):
+                            futures.append(executor.submit(process_single_image, path, matrix, angle))
+                
+                for future in concurrent.futures.as_completed(futures):
+                     future.result()
+
+    except Exception as e:
+        log_message(f"Error in transformimage: {e}")   
+
 
 def start_image_processing(folder_input):
     threading.Thread(target=transfromimage, args=(folder_input,), daemon=True).start()
